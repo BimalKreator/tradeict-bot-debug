@@ -79,8 +79,11 @@ function evaluateOpportunity(
   const binMins = getIntervalMinutes(binRate);
   const byMins = getIntervalMinutes(byRate);
 
-  if (binMins === 0 || byMins === 0) return null;
-  if (binMins !== byMins) return null;
+  // TEMPORARY: If either is 0 (unknown), assume 480 (8h) so token shows in list for debugging
+  const finalBinMins = binMins === 0 ? 480 : binMins;
+  const finalByMins = byMins === 0 ? 480 : byMins;
+
+  if (finalBinMins !== finalByMins) return null;
 
   const binFunding = binRate.fundingRate ?? 0;
   const byFunding = byRate.fundingRate ?? 0;
@@ -99,7 +102,8 @@ function evaluateOpportunity(
     shortExchange = 'bybit';
   }
 
-  const label = formatInterval(binMins);
+  const wasEstimated = binMins === 0 || byMins === 0;
+  const label = formatInterval(finalBinMins) + (wasEstimated ? ' (Estimated)' : '');
 
   return {
     symbol,
@@ -135,11 +139,21 @@ export function calculateFundingSpreads(
 ): FundingSpreadOpportunity[] {
   const minSpread = getMinSpreadDecimal();
   const opportunities: FundingSpreadOpportunity[] = [];
+  let debugCount = 0;
 
   for (const symbol of commonTokens) {
     const binRate = binanceRates[symbol];
     const byRate = bybitRates[symbol];
     if (!binRate || !byRate) continue;
+
+    if (debugCount < 5) {
+      console.log(`[DEBUG RAW] Symbol: ${symbol}`);
+      console.log(`  Binance Raw Interval: ${JSON.stringify(binRate.interval)}`);
+      console.log(`  Binance Info: ${JSON.stringify(binRate.info ?? {}).substring(0, 100)}`);
+      console.log(`  Bybit Raw Interval: ${JSON.stringify(byRate.interval)}`);
+      console.log(`  Bybit Info: ${JSON.stringify(byRate.info ?? {}).substring(0, 100)}`);
+      debugCount++;
+    }
 
     const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread);
     if (opp) opportunities.push(opp);
