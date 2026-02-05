@@ -4,15 +4,15 @@ import { getBestOpportunities, refreshScreenerCache, getCacheAge } from '../../.
 export async function GET() {
   try {
     console.log('[API Screener] Request received');
-
+    
     let opportunities = getBestOpportunities();
-
+    
     if (opportunities.length === 0 || getCacheAge() > 60) {
       console.log('[API Screener] Cache empty/stale, refreshing...');
       await refreshScreenerCache();
       opportunities = getBestOpportunities();
     }
-
+    
     const formatted = opportunities.map(opp => ({
       symbol: opp.symbol,
       spread: opp.spread,
@@ -32,7 +32,7 @@ export async function GET() {
       direction: `Long ${opp.longExchange} / Short ${opp.shortExchange}`,
       advantage: opp.isAsymmetric ? 'Freq. Funding (1h/2h)' : 'Spread Arb. (4h)'
     }));
-
+    
     return NextResponse.json(formatted, {
       headers: {
         'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=59',

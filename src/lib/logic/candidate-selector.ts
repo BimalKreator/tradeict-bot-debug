@@ -34,7 +34,7 @@ function oppToCandidate(opp: FundingSpreadOpportunity): BestTradeCandidate {
   const timeToFundingMs = getTimeToNextFundingMs(opp.primaryInterval);
   const nextFundingAt = new Date(Date.now() + timeToFundingMs);
   const expectedEntryTime = new Date(nextFundingAt.getTime() - 2 * 60 * 1000);
-
+  
   return {
     symbol: opp.symbol,
     spread: opp.spread,
@@ -69,20 +69,20 @@ export async function getBestCandidates(input: CandidateSelectorInput, limit: nu
     if (activeBaseKeys.has(candidateBaseKey)) continue;
     if (activeSymbols.has(opp.symbol)) continue;
     if (activeSymbols.has(candidateBaseKey)) continue;
-
+    
     if (minTimeToFundingSec != null) {
       const timeToFundingMs = getTimeToNextFundingMs(opp.primaryInterval);
       if (timeToFundingMs < minTimeToFundingSec * 1000) continue;
     }
-
+    
     eligible.push(opp);
   }
 
   const topFromScreener = eligible.slice(0, SCREENER_TOP_N);
-
+  
   const seenBases = new Set<string>();
   const unique: FundingSpreadOpportunity[] = [];
-
+  
   for (const opp of topFromScreener) {
     const baseKey = normalizeSymbol(opp.symbol);
     if (seenBases.has(baseKey)) continue;
@@ -90,7 +90,7 @@ export async function getBestCandidates(input: CandidateSelectorInput, limit: nu
     unique.push(opp);
     if (unique.length >= limit) break;
   }
-
+  
   return unique.slice(0, limit).map(oppToCandidate);
 }
 
