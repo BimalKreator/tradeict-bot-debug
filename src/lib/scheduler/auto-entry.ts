@@ -2,7 +2,6 @@ import { db } from '../db/sqlite';
 import { addNotification } from '../db/notifications';
 import { canEnterTrade } from '../entry/validator';
 import { calculateAllocation } from '../entry/allocator';
-import { getTradeDirection } from '../logic/direction';
 import { ExchangeManager } from '../exchanges/manager';
 import type { FundingSpreadOpportunity } from '../utils/screener';
 
@@ -61,10 +60,7 @@ export async function executeEntry(
     return;
   }
 
-  const { long, short } = getTradeDirection(
-    opportunity.binanceRate,
-    opportunity.bybitRate
-  );
+  const long = opportunity.longExchange;
   const sides =
     long === 'binance'
       ? { binance: 'BUY' as const, bybit: 'SELL' as const }
