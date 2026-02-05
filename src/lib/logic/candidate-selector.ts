@@ -18,8 +18,9 @@ function getIntervalPriority(interval: string): number {
 
 export function normalizeSymbol(symbol: string): string {
   if (!symbol) return '';
-  if (symbol.includes('/')) return symbol.split('/')[0];
-  return symbol.replace(/USDT:?USDT?$/i, '');
+  const s = symbol.trim().toUpperCase();
+  if (s.includes('/')) return s.split('/')[0];
+  return s.replace(/USDT:?USDT?$/i, '');
 }
 
 /** Returns base symbol in uppercase for consistent comparison. */

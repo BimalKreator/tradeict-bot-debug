@@ -6,17 +6,18 @@ import { getTradeDirection } from '../logic/direction';
 import { ExchangeManager } from '../exchanges/manager';
 import type { FundingSpreadOpportunity } from '../utils/screener';
 
-const DEDUP_MS = 5 * 60 * 1000;
+const DEDUP_MS = 60 * 1000;
 const lastExecuted = new Map<string, number>();
 
 function normalizeSymbol(symbol: string): string {
   if (!symbol) return '';
-  if (symbol.includes('/')) return symbol.split('/')[0];
-  return symbol.replace(/USDT:?USDT?$/i, '');
+  const s = symbol.trim().toUpperCase();
+  if (s.includes('/')) return s.split('/')[0];
+  return s.replace(/USDT:?USDT?$/i, '');
 }
 
 /**
- * Execute sniper entry for a symbol. Deduplicates by symbol within 5 minutes.
+ * Execute sniper entry for a symbol. Deduplicates by symbol within 1 minute.
  */
 export async function executeEntry(
   symbol: string,
@@ -26,11 +27,13 @@ export async function executeEntry(
   const now = Date.now();
   const last = lastExecuted.get(base);
   if (last != null && now - last < DEDUP_MS) {
+    console.log(`[AutoEntry] Skipping ${symbol}: dedup (last ${Math.round((now - last) / 1000)}s ago)`);
     return;
   }
 
   const validation = canEnterTrade(symbol);
   if (!validation.allowed) {
+    console.log(`[AutoEntry] Skipping ${symbol}: validation failed — ${validation.reason ?? 'not allowed'}`);
     return;
   }
 

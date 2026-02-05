@@ -2,6 +2,7 @@ import { db } from '@/lib/db/sqlite';
 import { archiveTrade, type ArchiveTradeData } from '@/lib/db/history';
 import { addNotification } from '@/lib/db/notifications';
 import { insertActiveTrade } from '../db/active-trades';
+import { invalidatePositionsCache } from '../cache/positions-cache';
 import { ExchangeManager } from '../exchanges/manager';
 import { PositionTracker } from '../exchanges/position-tracker';
 import type { GroupedPosition } from '../exchanges/position-tracker';
@@ -250,6 +251,7 @@ function markTradeClosed(trade: TradeRow, reason: string) {
         'INSERT INTO trade_logs (symbol, action, reason, pnl) VALUES (?, ?, ?, ?)'
       )
       .run(trade.symbol, 'EXIT', reason, null);
+    invalidatePositionsCache();
   } catch (err) {
     console.error('[ExitController] Failed to mark trade closed:', err);
   }
@@ -419,6 +421,7 @@ function runGhostImport(
         entryPriceBybit: entryPriceBybit ?? 0,
       });
       console.log(`📥 Restored missing trade from Exchange: ${group.symbol}`);
+      invalidatePositionsCache();
     } catch (err) {
       console.error('[ExitController] Ghost import failed for', group.symbol, err);
     }

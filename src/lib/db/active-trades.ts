@@ -1,5 +1,6 @@
 import { db } from './sqlite';
 import { getTrades } from '../storage/trades';
+import { invalidatePositionsCache } from '../cache/positions-cache';
 
 export interface InsertActiveTradeParams {
   symbol: string;
@@ -43,6 +44,7 @@ export function insertActiveTrade(params: InsertActiveTradeParams): void {
         entryPriceBybit
       );
     console.log(`[DB] Inserted active trade: ${symbol}`);
+    invalidatePositionsCache();
   } catch (err) {
     console.error('[DB] insertActiveTrade failed:', err);
     // Trade is still in trades.json; exit controller may use exchange positions

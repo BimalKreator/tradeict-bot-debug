@@ -3,8 +3,8 @@ import { getBestCandidates } from '../logic/candidate-selector';
 import { canEnterTrade } from '../entry/validator';
 import { executeEntry } from './auto-entry';
 
-const T_MINUS_2_UPPER_SEC = 130;
-const T_MINUS_2_LOWER_SEC = 110;
+const T_MINUS_2_UPPER_SEC = 180;
+const T_MINUS_2_LOWER_SEC = 90;
 const TOO_LATE_SEC = 30;
 const SLOTS_TOTAL = 3;
 

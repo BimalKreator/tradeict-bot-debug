@@ -1,26 +1,21 @@
 import { NextResponse } from 'next/server';
 import { PositionTracker } from '../../../lib/exchanges/position-tracker';
-import { db } from '../../../lib/db/sqlite';
+import { getActiveTradesCached, type ActiveTradeRow } from '../../../lib/cache/positions-cache';
 
 const TOTAL_SLOTS = 3;
 
 function normalizeSymbol(symbol: string): string {
-  if (!symbol || typeof symbol !== 'string') return '';
-  const s = symbol.trim();
-  if (s.includes('/')) return s.split('/')[0].trim();
-  return s.replace(/USDT:?USDT?$/i, '').replace(/USDT$/i, '').trim() || s;
+  if (!symbol) return '';
+  const s = symbol.trim().toUpperCase();
+  if (s.includes('/')) return s.split('/')[0];
+  return s.replace(/USDT:?USDT?$/i, '');
 }
 
 export async function GET() {
   console.log('API /positions called');
 
   try {
-    const countRow = db.db
-      .prepare(
-        "SELECT COUNT(*) as count FROM active_trades WHERE status = 'ACTIVE'"
-      )
-      .get() as { count: number };
-    const used = Number(countRow?.count ?? 0);
+    const { used, rows: activeRows } = getActiveTradesCached();
     const availableSlots = Math.max(0, TOTAL_SLOTS - used);
 
     const tracker = new PositionTracker();
@@ -28,27 +23,6 @@ export async function GET() {
       withDataComplete: true,
       forceRefresh: false,
     });
-
-    type ActiveTradeRow = {
-      symbol: string;
-      funding_received: number | null;
-      long_funding_acc: number | null;
-      short_funding_acc: number | null;
-      next_funding_time: string | null;
-      liquidation_binance: number | null;
-      liquidation_bybit: number | null;
-      leverage: number | null;
-      quantity: number | null;
-      entry_price_binance: number | null;
-      entry_price_bybit: number | null;
-      long_exchange: string | null;
-      short_exchange: string | null;
-    };
-    const activeRows = db.db
-      .prepare(
-        `SELECT symbol, funding_received, long_funding_acc, short_funding_acc, next_funding_time, liquidation_binance, liquidation_bybit, leverage, quantity, entry_price_binance, entry_price_bybit, long_exchange, short_exchange FROM active_trades WHERE status = 'ACTIVE'`
-      )
-      .all() as ActiveTradeRow[];
     const tradeBySymbol = new Map<string, ActiveTradeRow>();
     for (const r of activeRows) {
       tradeBySymbol.set(r.symbol, r);

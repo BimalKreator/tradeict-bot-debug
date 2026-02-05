@@ -3,6 +3,9 @@ import { ExchangeManager } from '../exchanges/manager';
 
 /** Static cache for instant API response. Refreshed in background by scheduler. */
 let opportunityCache: FundingSpreadOpportunity[] = [];
+/** Last successful fetch timestamp (ms). */
+let lastFetchTimestamp = 0;
+const CACHE_STALE_MS = 60_000;
 
 export interface FundingSpreadOpportunity {
   symbol: string;
@@ -198,19 +201,33 @@ export async function refreshScreenerCache(): Promise<void> {
     const commonTokens = getCommonTokens(binanceRates, bybitRates);
     const opportunities = buildOpportunitiesWithLogging(commonTokens, binanceRates, bybitRates);
     opportunityCache = opportunities;
+    lastFetchTimestamp = Date.now();
   } catch (err) {
     console.warn('[Screener] refreshScreenerCache failed (API error):', err);
   }
 }
 
 /**
- * Returns cached opportunities immediately. Does not block.
- * If cache is empty (e.g. before first refresh), returns [].
- * Use forceRefresh: true only when you need to wait for a fresh fetch (e.g. background job).
+ * Returns cached opportunities. If cache older than 60s, returns stale and triggers background refresh.
  */
 export function getBestOpportunities(opts?: { forceRefresh?: boolean }): FundingSpreadOpportunity[] {
+  const now = Date.now();
+  const ageMs = lastFetchTimestamp ? now - lastFetchTimestamp : Infinity;
+  const isStale = ageMs >= CACHE_STALE_MS;
+  const hasData = opportunityCache.length > 0;
+
+  if (hasData) {
+    console.log(`[Screener] Cache ${isStale ? 'stale' : 'hit'}, age: ${Math.round(ageMs / 1000)}s, count: ${opportunityCache.length}`);
+  } else {
+    console.log('[Screener] Cache miss (empty)');
+  }
+
+  if (isStale && hasData) {
+    refreshScreenerCache().catch((err) => console.warn('[Screener] background refresh failed:', err));
+  }
   if (opts?.forceRefresh) {
     refreshScreenerCache().catch((err) => console.warn('[Screener] getBestOpportunities(forceRefresh) failed:', err));
   }
-  return opportunityCache.length > 0 ? [...opportunityCache] : [];
+
+  return hasData ? [...opportunityCache] : [];
 }
