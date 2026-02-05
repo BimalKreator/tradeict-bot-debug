@@ -17,8 +17,7 @@ export interface BestTradeCandidate {
   longExchange: string;
   shortExchange: string;
   readyToTrade: boolean;
-  // Optional: for next-entry and refill (they need full opportunity + time)
-  opportunity?: FundingSpreadOpportunity;
+  opportunity: FundingSpreadOpportunity;
   nextFundingAt?: Date;
   expectedEntryTime?: Date;
   timeToFundingSec?: number;
@@ -49,6 +48,7 @@ export async function getBestTradeCandidate(): Promise<BestTradeCandidate | null
     longExchange: best.longExchange,
     shortExchange: best.shortExchange,
     readyToTrade: best.score > 0,
+    opportunity: best,
   };
 }
 
