@@ -4,7 +4,7 @@ import { ExchangeManager } from '../exchanges/manager';
 let opportunityCache: FundingSpreadOpportunity[] = [];
 let lastCacheUpdate = 0;
 
-const BLACKLIST = ['GPS', 'SKR', 'ENSO', 'ORBS', 'CVX', 'USDC'];
+const BLACKLIST = ['GPS', 'SKR', 'ENSO', 'ORBS', 'CVX', 'USDC', 'WAVES', 'DGB', 'BTS', 'PERP', 'TORN', 'OMG'];
 
 export interface FundingSpreadOpportunity {
   symbol: string;
@@ -50,9 +50,18 @@ export function getCommonTokens(
   bybitRates: Record<string, FundingRate>
 ): string[] {
   const common: string[] = [];
+
   for (const symbol of Object.keys(binanceRates)) {
     if (!symbol.includes('USDT')) continue;
-    if (!bybitRates[symbol]) continue;
+
+    const byRate = bybitRates[symbol];
+    if (!byRate) continue;
+
+    const binRate = binanceRates[symbol];
+
+    // Dead Market Filter: skip if funding is 0 or undefined (delisted/inactive)
+    if (binRate.fundingRate == null || binRate.fundingRate === 0) continue;
+    if (byRate.fundingRate == null || byRate.fundingRate === 0) continue;
 
     const base = symbol.split('/')[0].replace('1000', '');
     if (BLACKLIST.includes(base)) continue;
