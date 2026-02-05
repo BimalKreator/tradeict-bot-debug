@@ -1,233 +1,234 @@
 import type { FundingRate } from 'ccxt';
 import { ExchangeManager } from '../exchanges/manager';
+import { db } from '../db/sqlite';
 
-/** Static cache for instant API response. Refreshed in background by scheduler. */
+/** Static cache for instant API response */
 let opportunityCache: FundingSpreadOpportunity[] = [];
-/** Last successful fetch timestamp (ms). */
-let lastFetchTimestamp = 0;
-const CACHE_STALE_MS = 60_000;
+let lastCacheUpdate = 0;
 
 export interface FundingSpreadOpportunity {
   symbol: string;
   spread: number;
+  displaySpread: number;
   binanceRate: number;
   bybitRate: number;
   binancePrice: number;
   bybitPrice: number;
   longExchange: 'binance' | 'bybit';
   shortExchange: 'binance' | 'bybit';
+  binanceInterval: '1h' | '2h' | '4h';
+  bybitInterval: '1h' | '2h' | '4h';
+  primaryInterval: '1h' | '2h' | '4h';
+  /** Alias for primaryInterval for backward compatibility with candidate-selector, UI, etc. */
   interval: string;
+  isAsymmetric: boolean;
+  netFundingAdvantage: number;
+  score: number;
 }
 
-const INTERVAL_PRIORITY: Record<string, number> = {
-  '1h': 0,
-  '2h': 1,
-  '4h': 2,
-  '8h': 3,
-};
+const INTERVAL_PRIORITY = { '1h': 3, '2h': 2, '4h': 1 };
+const ALLOWED_INTERVALS = ['1h', '2h', '4h'];
 
-function getIntervalPriority(interval: string): number {
-  const normalized = interval?.toLowerCase() ?? '';
-  return INTERVAL_PRIORITY[normalized] ?? 99;
-}
-
-/**
- * Normalize interval to '1h' | '2h' | '4h' | '8h' for comparison.
- * Handles API quirks: '480' or 480 (minutes) -> '8h', 60 -> '1h', 120 -> '2h', 240 -> '4h'.
- */
-function normalizeInterval(interval: string | number | undefined): string {
-  if (interval == null || interval === '') return '8h';
-  const s = String(interval).toLowerCase().trim();
-  const num = parseInt(s, 10);
-  if (!Number.isNaN(num)) {
-    if (num <= 60) return '1h';
-    if (num <= 120) return '2h';
-    if (num <= 240) return '4h';
-    return '8h'; // 480, 480, etc.
+function getMinSpreadDecimal(): number {
+  try {
+    const settingsRow = db.db.prepare('SELECT min_spread_percent FROM bot_settings WHERE id = 1').get() as { min_spread_percent: number } | undefined;
+    return (settingsRow?.min_spread_percent ?? 0.075) / 100;
+  } catch {
+    return 0.00075;
   }
-  if (s === '1h' || s === '1') return '1h';
-  if (s === '2h' || s === '2') return '2h';
-  if (s === '4h' || s === '4') return '4h';
-  if (s === '8h' || s === '8') return '8h';
-  return '8h';
 }
 
-/**
- * Finds symbols that exist on both Binance and Bybit.
- */
-export function getCommonTokens(
-  binanceRates: Record<string, FundingRate>,
-  bybitRates: Record<string, FundingRate>
-): string[] {
+function normalizeInterval(interval: string | number | undefined): '1h' | '2h' | '4h' | null {
+  if (interval == null || interval === '') return null;
+  const strVal = String(interval).toLowerCase().trim();
+  const numVal = parseInt(strVal, 10);
+
+  if (!isNaN(numVal)) {
+    if (numVal === 60 || numVal === 1) return '1h';
+    if (numVal === 120 || numVal === 2) return '2h';
+    if (numVal === 240 || numVal === 4) return '4h';
+    if (numVal === 480 || numVal === 8) return null;
+    if (numVal === 720 || numVal === 12) return null;
+  }
+
+  if (strVal === '1h' || strVal === '1') return '1h';
+  if (strVal === '2h' || strVal === '2') return '2h';
+  if (strVal === '4h' || strVal === '4') return '4h';
+  if (strVal === '8h' || strVal === '8') return null;
+  if (strVal === '12h' || strVal === '12') return null;
+
+  return null;
+}
+
+function getLowerInterval(int1: '1h' | '2h' | '4h', int2: '1h' | '2h' | '4h'): '1h' | '2h' | '4h' {
+  const priority = { '1h': 3, '2h': 2, '4h': 1 };
+  return priority[int1] >= priority[int2] ? int1 : int2;
+}
+
+function getFundingInterval(rate: FundingRate): string | number | undefined {
+  const r = rate as unknown as { interval?: string; info?: { fundingInterval?: string | number } };
+  return rate.interval ?? r?.info?.fundingInterval;
+}
+
+function evaluateOpportunity(symbol: string, binRate: FundingRate, byRate: FundingRate, minSpread: number): FundingSpreadOpportunity | null {
+  const binInt = normalizeInterval(getFundingInterval(binRate));
+  const byInt = normalizeInterval(getFundingInterval(byRate));
+
+  if (!binInt || !byInt) return null;
+
+  const binFunding = binRate.fundingRate ?? 0;
+  const byFunding = byRate.fundingRate ?? 0;
+  const binPrice = binRate.markPrice ?? 0;
+  const byPrice = byRate.markPrice ?? 0;
+
+  let longExchange: 'binance' | 'bybit';
+  let shortExchange: 'binance' | 'bybit';
+  let isAsymmetric = false;
+  let netFundingAdvantage = 0;
+  let valid = false;
+
+  if (binInt === byInt) {
+    // RULE 2: Same Interval
+    const spread = Math.abs(binFunding - byFunding);
+    if (spread <= minSpread) return null;
+
+    if (binFunding > byFunding) {
+      longExchange = 'bybit';
+      shortExchange = 'binance';
+    } else {
+      longExchange = 'binance';
+      shortExchange = 'bybit';
+    }
+
+    isAsymmetric = false;
+    netFundingAdvantage = spread;
+    valid = true;
+  } else {
+    // RULE 1: Asymmetric Interval
+    const binPriority = INTERVAL_PRIORITY[binInt];
+    const byPriority = INTERVAL_PRIORITY[byInt];
+
+    const lowerIntervalEx = binPriority > byPriority ? 'binance' : 'bybit';
+    const higherIntervalEx = binPriority > byPriority ? 'bybit' : 'binance';
+    const lowerFunding = binPriority > byPriority ? binFunding : byFunding;
+    const higherFunding = binPriority > byPriority ? byFunding : binFunding;
+
+    const lowerIntervalGain = lowerFunding > 0 ? lowerFunding : 0;
+    const higherIntervalCost = higherFunding;
+    netFundingAdvantage = lowerIntervalGain - higherIntervalCost;
+
+    if (netFundingAdvantage <= minSpread) return null;
+
+    if (lowerIntervalEx === 'binance') {
+      shortExchange = 'binance';
+      longExchange = 'bybit';
+    } else {
+      shortExchange = 'bybit';
+      longExchange = 'binance';
+    }
+
+    isAsymmetric = true;
+    valid = true;
+  }
+
+  if (!valid) return null;
+
+  const spread = Math.abs(binFunding - byFunding);
+  const displaySpread = Math.max(0, spread - minSpread);
+  const primaryInterval = getLowerInterval(binInt, byInt);
+
+  const spreadScore = spread * 10000;
+  const intervalBonus = INTERVAL_PRIORITY[primaryInterval] * 50;
+  const asymmetricBonus = isAsymmetric ? 25 : 0;
+  const score = spreadScore + intervalBonus + asymmetricBonus;
+
+  return {
+    symbol, spread, displaySpread, binanceRate: binFunding, bybitRate: byFunding,
+    binancePrice: binPrice, bybitPrice: byPrice, longExchange, shortExchange,
+    binanceInterval: binInt, bybitInterval: byInt, primaryInterval,
+    interval: primaryInterval,
+    isAsymmetric, netFundingAdvantage, score
+  };
+}
+
+export function getCommonTokens(binanceRates: Record<string, FundingRate>, bybitRates: Record<string, FundingRate>): string[] {
   const binanceSymbols = new Set(Object.keys(binanceRates));
   const bybitSymbols = new Set(Object.keys(bybitRates));
   return [...binanceSymbols].filter((s) => bybitSymbols.has(s));
 }
 
-/**
- * Calculates funding rate spreads for common tokens.
- * Direction: exchange with HIGHER rate = SHORT, LOWER rate = LONG.
- * Sorting: by interval priority (1h > 2h > 4h > 8h), then by highest spread.
- */
-export function calculateFundingSpreads(
-  commonTokens: string[],
-  binanceRates: Record<string, FundingRate>,
-  bybitRates: Record<string, FundingRate>
-): FundingSpreadOpportunity[] {
+export function calculateFundingSpreads(commonTokens: string[], binanceRates: Record<string, FundingRate>, bybitRates: Record<string, FundingRate>): FundingSpreadOpportunity[] {
+  const minSpread = getMinSpreadDecimal();
   const opportunities: FundingSpreadOpportunity[] = [];
 
-  for (const symbol of commonTokens) {
-    const binanceRate = binanceRates[symbol];
-    const bybitRate = bybitRates[symbol];
-    if (!binanceRate || !bybitRate) continue;
+  console.log(`[Screener] Evaluating ${commonTokens.length} tokens with min spread: ${(minSpread * 100).toFixed(4)}%`);
 
-    const binanceIntervalRaw = binanceRate.interval ?? (binanceRate as unknown as { info?: { fundingInterval?: string | number } })?.info?.fundingInterval;
-    const bybitIntervalRaw = bybitRate.interval ?? (bybitRate as unknown as { info?: { fundingInterval?: string | number } })?.info?.fundingInterval;
-    const binanceInterval = normalizeInterval(binanceIntervalRaw);
-    const bybitInterval = normalizeInterval(bybitIntervalRaw);
-
-    if (binanceInterval !== bybitInterval) continue;
-
-    const binanceValue = binanceRate.fundingRate ?? 0;
-    const bybitValue = bybitRate.fundingRate ?? 0;
-    const spread = Math.abs(binanceValue - bybitValue);
-
-    const longExchange: 'binance' | 'bybit' = binanceValue < bybitValue ? 'binance' : 'bybit';
-    const shortExchange: 'binance' | 'bybit' = binanceValue >= bybitValue ? 'binance' : 'bybit';
-
-    const interval = binanceInterval;
-    const binancePrice = binanceRate.markPrice ?? 0;
-    const bybitPrice = bybitRate.markPrice ?? 0;
-
-    opportunities.push({
-      symbol,
-      spread,
-      binanceRate: binanceValue,
-      bybitRate: bybitValue,
-      binancePrice,
-      bybitPrice,
-      longExchange,
-      shortExchange,
-      interval,
-    });
-  }
-
-  opportunities.sort((a, b) => {
-    const intervalDiff = getIntervalPriority(a.interval) - getIntervalPriority(b.interval);
-    if (intervalDiff !== 0) return intervalDiff;
-    return b.spread - a.spread;
-  });
-
-  return opportunities;
-}
-
-/**
- * Build opportunities from rates and log rejections for debugging "No Opportunities".
- * Used by refreshScreenerCache.
- */
-function buildOpportunitiesWithLogging(
-  commonTokens: string[],
-  binanceRates: Record<string, FundingRate>,
-  bybitRates: Record<string, FundingRate>
-): FundingSpreadOpportunity[] {
-  const opportunities: FundingSpreadOpportunity[] = [];
-  let rejectedCount = 0;
-
-  console.log(`🔍 Screener found ${commonTokens.length} common tokens. Filtering...`);
+  let skipped8h = 0, skippedIntervalMismatch = 0, skippedLowSpread = 0;
+  let acceptedAsymmetric = 0, acceptedSymmetric = 0;
 
   for (const symbol of commonTokens) {
-    const binanceRate = binanceRates[symbol];
-    const bybitRate = bybitRates[symbol];
-    if (!binanceRate || !bybitRate) continue;
+    const binRate = binanceRates[symbol];
+    const byRate = bybitRates[symbol];
+    if (!binRate || !byRate) continue;
 
-    const binanceIntervalRaw = binanceRate.interval ?? (binanceRate as unknown as { info?: { fundingInterval?: string | number } })?.info?.fundingInterval;
-    const bybitIntervalRaw = bybitRate.interval ?? (bybitRate as unknown as { info?: { fundingInterval?: string | number } })?.info?.fundingInterval;
-    const binInterval = normalizeInterval(binanceIntervalRaw);
-    const bybInterval = normalizeInterval(bybitIntervalRaw);
+    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread);
 
-    if (binInterval !== bybInterval) {
-      rejectedCount++;
-      if (rejectedCount <= 3) {
-        console.log(
-          `⚠️ Rejected ${symbol}: Interval Mismatch (Bin raw: ${String(binanceIntervalRaw)} -> ${binInterval} vs Byb raw: ${String(bybitIntervalRaw)} -> ${bybInterval})`
-        );
-      }
-      continue;
+    if (opp) {
+      opportunities.push(opp);
+      opp.isAsymmetric ? acceptedAsymmetric++ : acceptedSymmetric++;
+    } else {
+      const binInt = normalizeInterval(getFundingInterval(binRate));
+      const byInt = normalizeInterval(getFundingInterval(byRate));
+      if (!binInt || !byInt) skipped8h++;
+      else if (binInt !== byInt) skippedIntervalMismatch++;
+      else skippedLowSpread++;
     }
+  }
 
-    const binanceValue = binanceRate.fundingRate ?? 0;
-    const bybitValue = bybitRate.fundingRate ?? 0;
-    const spread = Math.abs(binanceValue - bybitValue);
-    const longExchange: 'binance' | 'bybit' = binanceValue < bybitValue ? 'binance' : 'bybit';
-    const shortExchange: 'binance' | 'bybit' = binanceValue >= bybitValue ? 'binance' : 'bybit';
-    const interval = binInterval;
-    const binancePrice = binanceRate.markPrice ?? 0;
-    const bybitPrice = bybitRate.markPrice ?? 0;
+  opportunities.sort((a, b) => b.score - a.score);
 
-    opportunities.push({
-      symbol,
-      spread,
-      binanceRate: binanceValue,
-      bybitRate: bybitValue,
-      binancePrice,
-      bybitPrice,
-      longExchange,
-      shortExchange,
-      interval,
+  console.log(`[Screener] Results: ${opportunities.length} valid (${acceptedAsymmetric} asymmetric, ${acceptedSymmetric} symmetric)`);
+  console.log(`[Screener] Skipped: ${skipped8h} (8h+), ${skippedIntervalMismatch} (asymmetric no advantage), ${skippedLowSpread} (low spread)`);
+
+  if (opportunities.length > 0) {
+    console.log('[Screener] Top 5:');
+    opportunities.slice(0, 5).forEach((o, i) => {
+      console.log(`  ${i+1}. ${o.symbol} | Score: ${o.score.toFixed(0)} | ${o.isAsymmetric ? 'Asymmetric' : 'Symmetric'} (${o.binanceInterval}/${o.bybitInterval})`);
     });
   }
 
-  opportunities.sort((a, b) => {
-    const intervalDiff = getIntervalPriority(a.interval) - getIntervalPriority(b.interval);
-    if (intervalDiff !== 0) return intervalDiff;
-    return b.spread - a.spread;
-  });
-
-  console.log(`✅ Screener Finished: ${opportunities.length} valid, ${rejectedCount} rejected due to intervals.`);
   return opportunities;
 }
 
-/**
- * Fetches funding rates, builds opportunities with interval-mismatch logging, updates cache.
- * Call from scheduler every 60s; also once on scheduler start.
- */
 export async function refreshScreenerCache(): Promise<void> {
   try {
+    console.log('[Screener] Refreshing...');
     const manager = new ExchangeManager();
     const { binance: binanceRates, bybit: bybitRates } = await manager.getFundingRates();
-    const binanceCount = Object.keys(binanceRates).length;
-    const bybitCount = Object.keys(bybitRates).length;
-    console.log(`🔍 Screener fetch OK: ${binanceCount} Binance symbols, ${bybitCount} Bybit symbols.`);
+
+    if (Object.keys(binanceRates).length === 0 || Object.keys(bybitRates).length === 0) {
+      console.error('[Screener] CRITICAL: Empty exchange data');
+      return;
+    }
+
     const commonTokens = getCommonTokens(binanceRates, bybitRates);
-    const opportunities = buildOpportunitiesWithLogging(commonTokens, binanceRates, bybitRates);
-    opportunityCache = opportunities;
-    lastFetchTimestamp = Date.now();
+    opportunityCache = calculateFundingSpreads(commonTokens, binanceRates, bybitRates);
+    lastCacheUpdate = Date.now();
+
+    console.log(`[Screener] Cache updated: ${opportunityCache.length} opportunities`);
   } catch (err) {
-    console.warn('[Screener] refreshScreenerCache failed (API error):', err);
+    console.error('[Screener] refresh failed:', err);
   }
 }
 
-/**
- * Returns cached opportunities. If cache older than 60s, returns stale and triggers background refresh.
- */
 export function getBestOpportunities(opts?: { forceRefresh?: boolean }): FundingSpreadOpportunity[] {
-  const now = Date.now();
-  const ageMs = lastFetchTimestamp ? now - lastFetchTimestamp : Infinity;
-  const isStale = ageMs >= CACHE_STALE_MS;
-  const hasData = opportunityCache.length > 0;
-
-  if (hasData) {
-    console.log(`[Screener] Cache ${isStale ? 'stale' : 'hit'}, age: ${Math.round(ageMs / 1000)}s, count: ${opportunityCache.length}`);
-  } else {
-    console.log('[Screener] Cache miss (empty)');
-  }
-
-  if (isStale && hasData) {
-    refreshScreenerCache().catch((err) => console.warn('[Screener] background refresh failed:', err));
-  }
   if (opts?.forceRefresh) {
-    refreshScreenerCache().catch((err) => console.warn('[Screener] getBestOpportunities(forceRefresh) failed:', err));
+    refreshScreenerCache().catch(err => console.error('[Screener] Force refresh failed:', err));
   }
+  return [...opportunityCache];
+}
 
-  return hasData ? [...opportunityCache] : [];
+export function getCacheAge(): number {
+  if (lastCacheUpdate === 0) return Infinity;
+  return Math.floor((Date.now() - lastCacheUpdate) / 1000);
 }
