@@ -1,4 +1,3 @@
-typescript
 import type { FundingRate } from 'ccxt';
 import { ExchangeManager } from '../exchanges/manager';
 import { db } from '../db/sqlite';
