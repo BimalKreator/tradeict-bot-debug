@@ -2,7 +2,6 @@ import type { FundingRate } from 'ccxt';
 import { ExchangeManager } from '../exchanges/manager';
 import { db } from '../db/sqlite';
 
-/** Static cache for instant API response. */
 let opportunityCache: FundingSpreadOpportunity[] = [];
 let lastCacheUpdate = 0;
 
@@ -18,87 +17,76 @@ export interface FundingSpreadOpportunity {
   shortExchange: 'binance' | 'bybit';
   binanceInterval: string;
   bybitInterval: string;
-  primaryInterval: string; // The common interval
-  isAsymmetric: boolean;   // Always false in this logic
-  score: number;           // Equal to spread for ranking
+  primaryInterval: string;
+  isAsymmetric: boolean;
+  score: number;
 }
 
-/** Get min spread from settings */
 function getMinSpreadDecimal(): number {
   try {
-    const settingsRow = db.db
-      .prepare('SELECT min_spread_percent FROM bot_settings WHERE id = 1')
-      .get() as { min_spread_percent: number } | undefined;
-    return (settingsRow?.min_spread_percent ?? 0.01) / 100;
+    const row = db.db.prepare('SELECT min_spread_percent FROM bot_settings WHERE id = 1').get() as { min_spread_percent?: number } | undefined;
+    return (row?.min_spread_percent ?? 0.01) / 100;
   } catch {
-    return 0.0001; // Default 0.01%
+    return 0.0001;
   }
 }
-
-/** Raw info shape from exchanges (Binance / Bybit) */
-type RateInfo = {
-  fundingIntervalHours?: number | string;
-  fundingInterval?: string | number;
-  interval?: string | number;
-  fundingPeriod?: string | number;
-  [key: string]: unknown;
-};
 
 /**
- * Deep raw data extraction. No defaults – if interval cannot be determined, returns null.
- * Binance: fundingIntervalHours, interval, fundingPeriod.
- * Bybit: fundingInterval (often minutes e.g. '60').
+ * Universal helper to convert ANY interval format to Minutes (number).
+ * Returns 0 if unknown.
  */
-function normalizeInterval(rate: FundingRate): string | null {
+function getIntervalMinutes(rate: FundingRate): number {
   let raw: string | number | undefined = rate.interval;
 
-  if (raw == null || raw === '') {
-    const info = rate.info as RateInfo | undefined;
-    if (info) {
-      if (info.fundingIntervalHours != null) raw = String(info.fundingIntervalHours) + 'h';
-      else if (info.fundingInterval != null) raw = info.fundingInterval;
-      else if (info.interval != null) raw = info.interval;
-      else if (info.fundingPeriod != null) raw = info.fundingPeriod;
-    }
+  if (raw != null && raw !== '') {
+    const s = String(raw).toLowerCase().trim();
+    if (s.includes('h')) return parseFloat(s) * 60; // '8h' -> 480
+    if (s.includes('m')) return parseFloat(s); // '60m' -> 60
+    const n = parseInt(s, 10);
+    if (!isNaN(n)) return n; // '60' -> 60
   }
 
-  if (raw == null || raw === '') return null;
+  const info = (rate.info || {}) as Record<string, unknown>;
 
-  const str = String(raw).toLowerCase().trim();
-  const num = parseInt(str, 10);
-
-  if (!isNaN(num)) {
-    if (num === 60 || num === 1) return '1h';
-    if (num === 120 || num === 2) return '2h';
-    if (num === 240 || num === 4) return '4h';
-    if (num === 480 || num === 8) return '8h';
+  if (info.fundingIntervalHours != null) return Number(info.fundingIntervalHours) * 60;
+  if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) || 0;
+  if (info.interval != null && String(info.interval).toLowerCase().includes('h')) {
+    return parseFloat(String(info.interval)) * 60;
   }
+  if (info.interval != null) {
+    const n = parseInt(String(info.interval), 10);
+    if (!isNaN(n)) return n;
+  }
+  if (info.fundingPeriod != null) return parseInt(String(info.fundingPeriod), 10) || 0;
 
-  if (str.includes('1h')) return '1h';
-  if (str.includes('2h')) return '2h';
-  if (str.includes('4h')) return '4h';
-  if (str.includes('8h')) return '8h';
-
-  return null;
+  return 0;
 }
 
-/** Called only when binInt and byInt are already non-null and equal. */
+/** Convert minutes back to readable label */
+function formatInterval(minutes: number): string {
+  if (minutes === 0) return '??';
+  if (minutes >= 60) return `${minutes / 60}h`;
+  return `${minutes}m`;
+}
+
 function evaluateOpportunity(
   symbol: string,
   binRate: FundingRate,
   byRate: FundingRate,
-  minSpread: number,
-  binInt: string,
-  byInt: string
+  minSpread: number
 ): FundingSpreadOpportunity | null {
+
+  const binMins = getIntervalMinutes(binRate);
+  const byMins = getIntervalMinutes(byRate);
+
+  if (binMins === 0 || byMins === 0) return null;
+  if (binMins !== byMins) return null;
 
   const binFunding = binRate.fundingRate ?? 0;
   const byFunding = byRate.fundingRate ?? 0;
-
   const spread = Math.abs(binFunding - byFunding);
-  if (spread < minSpread) {
-    return null;
-  }
+
+  if (spread < minSpread) return null;
 
   let longExchange: 'binance' | 'bybit';
   let shortExchange: 'binance' | 'bybit';
@@ -111,6 +99,8 @@ function evaluateOpportunity(
     shortExchange = 'bybit';
   }
 
+  const label = formatInterval(binMins);
+
   return {
     symbol,
     spread,
@@ -121,11 +111,11 @@ function evaluateOpportunity(
     bybitPrice: byRate.markPrice ?? 0,
     longExchange,
     shortExchange,
-    binanceInterval: binInt,
-    bybitInterval: byInt,
-    primaryInterval: binInt,
+    binanceInterval: label,
+    bybitInterval: label,
+    primaryInterval: label,
     isAsymmetric: false,
-    score: Math.max(1, Math.round(spread * 10000))
+    score: Math.max(1, Math.round(spread * 10000)),
   };
 }
 
@@ -146,48 +136,16 @@ export function calculateFundingSpreads(
   const minSpread = getMinSpreadDecimal();
   const opportunities: FundingSpreadOpportunity[] = [];
 
-  console.log(`[Screener] Checking ${commonTokens.length} tokens. Min Spread: ${(minSpread * 100).toFixed(4)}%`);
-
-  let skippedUnknown = 0;
-  let skippedMismatch = 0;
-  let skippedLowSpread = 0;
-  let logNullCount = 0;
-
   for (const symbol of commonTokens) {
     const binRate = binanceRates[symbol];
     const byRate = bybitRates[symbol];
     if (!binRate || !byRate) continue;
 
-    const binInt = normalizeInterval(binRate);
-    const byInt = normalizeInterval(byRate);
-
-    if (binInt == null || byInt == null) {
-      if (logNullCount < 3) {
-        console.log(`[Screener] Missing interval for ${symbol}: Binance info=${JSON.stringify(binRate.info ?? {}).substring(0, 120)}`);
-        console.log(`[Screener]   Bybit info=${JSON.stringify(byRate.info ?? {}).substring(0, 120)}`);
-        logNullCount++;
-      }
-      skippedUnknown++;
-      continue;
-    }
-
-    if (binInt !== byInt) {
-      skippedMismatch++;
-      continue;
-    }
-
-    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread, binInt, byInt);
-    if (opp) {
-      opportunities.push(opp);
-    } else {
-      skippedLowSpread++;
-    }
+    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread);
+    if (opp) opportunities.push(opp);
   }
 
-  opportunities.sort((a, b) => b.score - a.score);
-
-  console.log(`[Screener] Found ${opportunities.length} valid opportunities.`);
-  console.log(`[Screener] Skipped: ${skippedUnknown} (Unknown interval), ${skippedMismatch} (Interval Mismatch), ${skippedLowSpread} (Low Spread)`);
+  opportunities.sort((a, b) => b.spread - a.spread);
 
   return opportunities;
 }
@@ -195,15 +153,13 @@ export function calculateFundingSpreads(
 export async function refreshScreenerCache(): Promise<void> {
   try {
     const manager = new ExchangeManager();
-    const { binance: binanceRates, bybit: bybitRates } = await manager.getFundingRates();
-    const commonTokens = getCommonTokens(binanceRates, bybitRates);
-
-    if (commonTokens.length === 0) {
+    const { binance, bybit } = await manager.getFundingRates();
+    const common = getCommonTokens(binance, bybit);
+    if (common.length === 0) {
       console.warn('[Screener] No common tokens found.');
       return;
     }
-
-    opportunityCache = calculateFundingSpreads(commonTokens, binanceRates, bybitRates);
+    opportunityCache = calculateFundingSpreads(common, binance, bybit);
     lastCacheUpdate = Date.now();
   } catch (err) {
     console.error('[Screener] Refresh failed:', err);
