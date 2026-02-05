@@ -32,24 +32,32 @@ function getMinSpreadDecimal(): number {
 }
 
 /**
- * Universal helper to convert ANY interval format to Minutes (number).
- * Returns 0 if unknown.
+ * Deep raw extraction. No guesses – returns 0 only when unknown.
+ * Order: CCXT rate.interval → Binance fundingIntervalHours → Bybit fundingInterval → generic fields.
  */
 function getIntervalMinutes(rate: FundingRate): number {
-  let raw: string | number | undefined = rate.interval;
-
-  if (raw != null && raw !== '') {
-    const s = String(raw).toLowerCase().trim();
-    if (s.includes('h')) return parseFloat(s) * 60; // '8h' -> 480
-    if (s.includes('m')) return parseFloat(s); // '60m' -> 60
-    const n = parseInt(s, 10);
-    if (!isNaN(n)) return n; // '60' -> 60
-  }
-
   const info = (rate.info || {}) as Record<string, unknown>;
 
+  // 1. CCXT standard field
+  const raw = rate.interval;
+  if (raw != null && raw !== '') {
+    const s = String(raw).toLowerCase().trim();
+    if (s.includes('h')) return parseFloat(s) * 60;
+    if (s.includes('m')) return parseFloat(s);
+    const n = parseInt(s, 10);
+    if (!isNaN(n)) return n;
+  }
+
+  // 2. Binance: fundingIntervalHours (hours, e.g. 1, 4, 8)
   if (info.fundingIntervalHours != null) return Number(info.fundingIntervalHours) * 60;
-  if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) || 0;
+
+  // 3. Bybit: fundingInterval (minutes, e.g. '60', '480')
+  if (info.fundingInterval != null) {
+    const n = parseInt(String(info.fundingInterval), 10);
+    if (!isNaN(n)) return n;
+  }
+
+  // 4. Generic: interval, fundingPeriod
   if (info.interval != null && String(info.interval).toLowerCase().includes('h')) {
     return parseFloat(String(info.interval)) * 60;
   }
@@ -57,14 +65,16 @@ function getIntervalMinutes(rate: FundingRate): number {
     const n = parseInt(String(info.interval), 10);
     if (!isNaN(n)) return n;
   }
-  if (info.fundingPeriod != null) return parseInt(String(info.fundingPeriod), 10) || 0;
+  if (info.fundingPeriod != null) {
+    const n = parseInt(String(info.fundingPeriod), 10);
+    if (!isNaN(n)) return n;
+  }
 
-  return 0;
+  return 0; // Unk – never guess
 }
 
-/** Convert minutes back to readable label */
 function formatInterval(minutes: number): string {
-  if (minutes === 0) return '??';
+  if (minutes <= 0) return 'Unk';
   if (minutes >= 60) return `${minutes / 60}h`;
   return `${minutes}m`;
 }
@@ -79,11 +89,10 @@ function evaluateOpportunity(
   const binMins = getIntervalMinutes(binRate);
   const byMins = getIntervalMinutes(byRate);
 
-  // TEMPORARY: If either is 0 (unknown), assume 480 (8h) so token shows in list for debugging
-  const finalBinMins = binMins === 0 ? 480 : binMins;
-  const finalByMins = byMins === 0 ? 480 : byMins;
+  const binLabel = binMins > 0 ? formatInterval(binMins) : 'Unk';
+  const byLabel = byMins > 0 ? formatInterval(byMins) : 'Unk';
 
-  if (finalBinMins !== finalByMins) return null;
+  if (binLabel === 'Unk' && byLabel === 'Unk') return null;
 
   const binFunding = binRate.fundingRate ?? 0;
   const byFunding = byRate.fundingRate ?? 0;
@@ -102,8 +111,7 @@ function evaluateOpportunity(
     shortExchange = 'bybit';
   }
 
-  const wasEstimated = binMins === 0 || byMins === 0;
-  const label = formatInterval(finalBinMins) + (wasEstimated ? ' (Estimated)' : '');
+  const displayInterval = binMins !== byMins ? `${binLabel}/${byLabel}` : binLabel;
 
   return {
     symbol,
@@ -115,10 +123,10 @@ function evaluateOpportunity(
     bybitPrice: byRate.markPrice ?? 0,
     longExchange,
     shortExchange,
-    binanceInterval: label,
-    bybitInterval: label,
-    primaryInterval: label,
-    isAsymmetric: false,
+    binanceInterval: binLabel,
+    bybitInterval: byLabel,
+    primaryInterval: displayInterval,
+    isAsymmetric: binMins !== byMins,
     score: Math.max(1, Math.round(spread * 10000)),
   };
 }
@@ -139,20 +147,16 @@ export function calculateFundingSpreads(
 ): FundingSpreadOpportunity[] {
   const minSpread = getMinSpreadDecimal();
   const opportunities: FundingSpreadOpportunity[] = [];
-  let debugCount = 0;
 
   for (const symbol of commonTokens) {
     const binRate = binanceRates[symbol];
     const byRate = bybitRates[symbol];
     if (!binRate || !byRate) continue;
 
-    if (debugCount < 5) {
-      console.log(`[DEBUG RAW] Symbol: ${symbol}`);
-      console.log(`  Binance Raw Interval: ${JSON.stringify(binRate.interval)}`);
-      console.log(`  Binance Info: ${JSON.stringify(binRate.info ?? {}).substring(0, 100)}`);
-      console.log(`  Bybit Raw Interval: ${JSON.stringify(byRate.interval)}`);
-      console.log(`  Bybit Info: ${JSON.stringify(byRate.info ?? {}).substring(0, 100)}`);
-      debugCount++;
+    if (symbol.includes('JST')) {
+      console.log(`[DEBUG JST] Symbol: ${symbol}`);
+      console.log(`  Binance: interval=${JSON.stringify(binRate.interval)}, info=${JSON.stringify(binRate.info ?? {})}`);
+      console.log(`  Bybit: interval=${JSON.stringify(byRate.interval)}, info=${JSON.stringify(byRate.info ?? {})}`);
     }
 
     const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread);
