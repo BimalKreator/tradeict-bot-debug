@@ -28,58 +28,73 @@ export interface CandidateSelectorInput {
   minTimeToFundingSec?: number;
 }
 
-function mapToCandidate(opp: FundingSpreadOpportunity): BestTradeCandidate {
-  const msToFunding = getTimeToNextFundingMs(opp.primaryInterval.split('/')[0] || '8h');
+function mapToCandidate(op: FundingSpreadOpportunity): BestTradeCandidate {
+  const intervalPart = op.primaryInterval.split('/')[0] || '8h';
+  const msToFunding = getTimeToNextFundingMs(intervalPart);
   const nextFundingAt = new Date(Date.now() + msToFunding);
   const expectedEntryTime = new Date(nextFundingAt.getTime() - 2 * 60 * 1000);
   return {
-    symbol: opp.symbol,
-    spread: opp.spread,
-    spreadPercent: ((opp.displaySpread ?? opp.spread) * 100).toFixed(4),
-    interval: opp.primaryInterval,
-    score: opp.score,
-    longExchange: opp.longExchange,
-    shortExchange: opp.shortExchange,
-    readyToTrade: opp.isSafe && opp.score > 0,
-    opportunity: opp,
+    symbol: op.symbol,
+    spread: op.spread,
+    spreadPercent: ((op.displaySpread ?? op.spread) * 100).toFixed(4),
+    interval: op.primaryInterval,
+    score: op.score,
+    longExchange: op.longExchange,
+    shortExchange: op.shortExchange,
+    readyToTrade: true,
+    opportunity: op,
     timeToFundingSec: Math.floor(msToFunding / 1000),
     nextFundingAt,
     expectedEntryTime,
   };
 }
 
-export async function getBestTradeCandidate(): Promise<BestTradeCandidate | null> {
-  const opportunities = getBestOpportunities().filter((o) => o.isSafe);
-  if (opportunities.length === 0) return null;
-
-  const sorted = [...opportunities].sort((a, b) => b.score - a.score);
-  return mapToCandidate(sorted[0]);
-}
-
-export async function getBestCandidates(
-  input: CandidateSelectorInput,
-  limit: number
-): Promise<BestTradeCandidate[]> {
-  const { activeSymbols, minTimeToFundingSec } = input;
+/**
+ * Get the single best candidate not already in activeSymbols.
+ * Top 1 -> Active? -> Top 2 -> ...
+ */
+export async function getBestTradeCandidate(
+  activeSymbols: Set<string> = new Set()
+): Promise<BestTradeCandidate | null> {
   const opportunities = getBestOpportunities();
-
-  const eligible: BestTradeCandidate[] = [];
   const activeBaseKeys = new Set([...activeSymbols].map((s) => normalizeSymbol(s)));
 
-  for (const opp of opportunities) {
-    if (!opp.isSafe) continue; // Skip timestamp-mismatched (FLOW, THE, etc.)
-    const base = normalizeSymbol(opp.symbol);
-    if (activeSymbols.has(opp.symbol) || activeBaseKeys.has(base)) continue;
+  const best = opportunities.find(
+    (op) => !activeSymbols.has(op.symbol) && !activeBaseKeys.has(normalizeSymbol(op.symbol))
+  );
 
-    if (minTimeToFundingSec != null) {
-      const intervalPart = opp.primaryInterval.split('/')[0] || '8h';
-      const msToFunding = getTimeToNextFundingMs(intervalPart);
-      if (msToFunding < minTimeToFundingSec * 1000) continue;
+  if (!best) return null;
+
+  return mapToCandidate(best);
+}
+
+/**
+ * Used by Refill Logic: Get up to `limit` candidates, skipping active symbols.
+ * Top 1 -> Active? -> Top 2 -> Active? -> Top 3 -> ...
+ */
+export async function getBestCandidates(
+  params: { activeSymbols: Set<string>; minSpreadDecimal?: number; minTimeToFundingSec?: number },
+  limit: number
+): Promise<BestTradeCandidate[]> {
+  const opportunities = getBestOpportunities();
+  const candidates: BestTradeCandidate[] = [];
+  const activeBaseKeys = new Set([...params.activeSymbols].map((s) => normalizeSymbol(s)));
+
+  for (const op of opportunities) {
+    if (candidates.length >= limit) break;
+
+    // Skip if already active
+    if (params.activeSymbols.has(op.symbol)) continue;
+    if (activeBaseKeys.has(normalizeSymbol(op.symbol))) continue;
+
+    const candidate = mapToCandidate(op);
+
+    if (params.minTimeToFundingSec != null) {
+      if (candidate.timeToFundingSec < params.minTimeToFundingSec) continue;
     }
 
-    eligible.push(mapToCandidate(opp));
+    candidates.push(candidate);
   }
 
-  eligible.sort((a, b) => b.score - a.score);
-  return eligible.slice(0, limit);
+  return candidates;
 }

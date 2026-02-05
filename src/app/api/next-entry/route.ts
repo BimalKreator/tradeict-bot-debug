@@ -1,11 +1,20 @@
 import { NextResponse } from 'next/server';
 import { getBestTradeCandidate } from '@/lib/logic/candidate-selector';
+import { db } from '@/lib/db/sqlite';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const candidate = await getBestTradeCandidate();
+    const activeRows = db.db
+      .prepare("SELECT symbol FROM active_trades WHERE status = 'ACTIVE'")
+      .all() as { symbol: string }[];
+    const activeSymbols = new Set<string>();
+    for (const row of activeRows) {
+      activeSymbols.add(row.symbol);
+      activeSymbols.add(row.symbol.split('/')[0]);
+    }
+    const candidate = await getBestTradeCandidate(activeSymbols);
 
     if (!candidate) {
       return NextResponse.json({

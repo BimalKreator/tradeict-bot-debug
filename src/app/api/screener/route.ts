@@ -29,11 +29,9 @@ export async function GET() {
       binanceInterval: opp.binanceInterval,
       bybitInterval: opp.bybitInterval,
       strategy: opp.strategy,
-      isSafe: opp.isSafe,
       score: opp.score,
       spreadDisplay: `${(opp.displaySpread * 100).toFixed(4)}%`,
-      direction: `Long ${opp.longExchange} / Short ${opp.shortExchange}`,
-      advantage: opp.isSafe ? 'Spread Arb.' : '⚠️ Time Mismatch'
+      direction: `Long ${opp.longExchange} / Short ${opp.shortExchange}`
     }));
     
     return NextResponse.json(formatted, {
