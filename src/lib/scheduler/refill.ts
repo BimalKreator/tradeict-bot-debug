@@ -3,94 +3,67 @@ import { getBestCandidates } from '../logic/candidate-selector';
 import { canEnterTrade } from '../entry/validator';
 import { executeEntry } from './auto-entry';
 
-const T_MINUS_2_UPPER_SEC = 180;
-const T_MINUS_2_LOWER_SEC = 90;
-const TOO_LATE_SEC = 30;
 const SLOTS_TOTAL = 3;
+const MIN_TIME_TO_FUNDING_SEC = 60;
 
 /**
- * Multi-Slot Sniper: Fill all available slots. Execute exactly 2 minutes before funding.
- * Runs every 10s to catch the 110–130s window.
- * Selects top N candidates per screener priority (1h > 2h > 4h > 8h, then spread).
+ * Unlock Auto Trade: Enter ANYTIME if time to funding > 60s (no restrictive window).
  */
 export async function handleSlotRefill(): Promise<void> {
-  const probe = canEnterTrade('__probe__');
-  if (!probe.allowed && probe.reason !== 'Duplicate Token') {
-    return;
-  }
-
-  const settings = db.db
-    .prepare('SELECT min_spread_percent FROM bot_settings WHERE id = 1')
-    .get() as { min_spread_percent: number } | undefined;
-  const minSpreadDecimal = (settings?.min_spread_percent ?? 0.075) / 100;
-
-  const activeRows = db.db
-    .prepare('SELECT symbol FROM active_trades WHERE status = ?')
-    .all('ACTIVE') as { symbol: string }[];
-  const activeSymbols = new Set<string>();
-  for (const row of activeRows) {
-    const sym = row.symbol;
-    activeSymbols.add(sym);
-    activeSymbols.add(sym.split('/')[0]);
-  }
-  const activeTradesCount = activeRows.length;
-  const slotsNeeded = Math.max(0, SLOTS_TOTAL - activeTradesCount);
-
-  if (slotsNeeded <= 0) {
-    return;
-  }
-
-  let candidates;
   try {
-    candidates = await getBestCandidates(
-      { activeSymbols, minSpreadDecimal, minTimeToFundingSec: TOO_LATE_SEC },
+    const settings = db.db
+      .prepare('SELECT auto_entry_enabled, max_capital_percent, min_spread_percent FROM bot_settings WHERE id = 1')
+      .get() as
+      | { auto_entry_enabled?: number; max_capital_percent?: number; min_spread_percent?: number }
+      | undefined;
+
+    if (!settings?.auto_entry_enabled) return;
+
+    const activeRows = db.db
+      .prepare("SELECT symbol FROM active_trades WHERE status = 'ACTIVE'")
+      .all() as { symbol: string }[];
+    const activeSymbols = new Set<string>();
+    for (const row of activeRows) {
+      const sym = row.symbol;
+      activeSymbols.add(sym);
+      activeSymbols.add(sym.split('/')[0]);
+    }
+
+    const activeCount = activeRows.length;
+    const slotsNeeded = Math.max(0, SLOTS_TOTAL - activeCount);
+
+    if (slotsNeeded <= 0) return;
+
+    const minSpreadDecimal = (settings?.min_spread_percent ?? 0) / 100;
+
+    const candidates = await getBestCandidates(
+      {
+        activeSymbols,
+        minSpreadDecimal,
+        minTimeToFundingSec: MIN_TIME_TO_FUNDING_SEC,
+      },
       slotsNeeded
     );
-  } catch (err) {
-    console.error('[AutoEntry] getBestCandidates failed:', err);
-    return;
-  }
 
-  const uniqueCandidates = [...new Set(candidates.map((c) => c.symbol))]
-    .map((s) => candidates.find((c) => c.symbol === s))
-    .filter((c): c is NonNullable<typeof c> => c != null);
+    console.log(`[Refill] Found ${candidates.length} candidates for ${slotsNeeded} slots.`);
 
-  const anyInWindow = uniqueCandidates.some((c) => {
-    const sec = (c.nextFundingAt.getTime() - Date.now()) / 1000;
-    return sec >= T_MINUS_2_LOWER_SEC && sec <= T_MINUS_2_UPPER_SEC;
-  });
-
-  if (anyInWindow) {
-    console.log(`🎯 Batch Refill: ${slotsNeeded} slot(s) available — executing Top ${uniqueCandidates.length} in order.`);
-    for (const candidate of uniqueCandidates) {
-      try {
-        const symbol = candidate.symbol;
-        const validation = canEnterTrade(symbol);
-        if (!validation.allowed) {
-          console.log(`[Refill] Skipping ${symbol}: ${validation.reason ?? 'not allowed'}`);
-          continue;
-        }
-        const secondsLeft = (candidate.nextFundingAt.getTime() - Date.now()) / 1000;
-        if (secondsLeft < TOO_LATE_SEC) {
-          console.log(`[Refill] Skipping ${symbol}: missed window (${Math.round(secondsLeft)}s).`);
-          continue;
-        }
-        console.log(`🎯 Executing ${symbol} (${uniqueCandidates.indexOf(candidate) + 1}/${uniqueCandidates.length}).`);
-        await executeEntry(symbol, candidate.opportunity);
-      } catch (error) {
-        console.error(`[Refill] Failed to execute entry for ${candidate.symbol}, continuing to next candidate...`, error);
+    for (const candidate of candidates) {
+      const validation = canEnterTrade(candidate.symbol);
+      if (!validation.allowed) {
+        console.log(`[Refill] Skipping ${candidate.symbol}: ${validation.reason ?? 'not allowed'}`);
+        continue;
       }
-    }
-  } else {
-    for (const candidate of uniqueCandidates) {
+
       const secondsLeft = (candidate.nextFundingAt.getTime() - Date.now()) / 1000;
-      if (secondsLeft < TOO_LATE_SEC) {
-        console.log(`⚠️ Missed window for ${candidate.symbol}. Skipping.`);
-      } else {
-        console.log(
-          `Targeting ${candidate.symbol}. Time to funding: ${Math.round(secondsLeft)}s. Waiting for T-120s mark.`
-        );
+      if (secondsLeft < MIN_TIME_TO_FUNDING_SEC) {
+        console.log(`[Refill] Skipping ${candidate.symbol}: too late (${Math.round(secondsLeft)}s left)`);
+        continue;
       }
+
+      console.log(`[Refill] Executing Auto-Entry on ${candidate.symbol}`);
+      await executeEntry(candidate.symbol, candidate.opportunity);
     }
+  } catch (error) {
+    console.error('[Refill] Error:', error);
   }
 }

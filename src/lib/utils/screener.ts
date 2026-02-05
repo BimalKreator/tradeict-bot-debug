@@ -128,6 +128,14 @@ function evaluateOpportunity(
   };
 }
 
+function parseIntervalToMinutes(intervalStr: string): number {
+  const s = String(intervalStr).toLowerCase();
+  if (s.includes('1h')) return 60;
+  if (s.includes('2h')) return 120;
+  if (s.includes('4h')) return 240;
+  return 480;
+}
+
 export function calculateFundingSpreads(
   commonTokens: string[],
   binanceRates: Record<string, FundingRate>,
@@ -144,7 +152,15 @@ export function calculateFundingSpreads(
     const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread);
     if (opp) opportunities.push(opp);
   }
-  return opportunities.sort((a, b) => b.spread - a.spread);
+
+  opportunities.sort((a, b) => {
+    const minA = parseIntervalToMinutes(a.primaryInterval);
+    const minB = parseIntervalToMinutes(b.primaryInterval);
+    if (minA !== minB) return minA - minB;
+    return b.spread - a.spread;
+  });
+
+  return opportunities;
 }
 
 export async function refreshScreenerCache(): Promise<void> {

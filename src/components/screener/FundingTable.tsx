@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useScreener } from '../../hooks/useScreener';
 import { RefreshCw } from 'lucide-react';
 
@@ -15,8 +16,32 @@ interface FundingSpreadOpportunity {
   displaySpread?: number;
 }
 
+function normalizeSymbol(s: string): string {
+  return s.replace('/USDT:USDT', '').replace('/USDT', '').replace(':USDT', '');
+}
+
 export default function FundingTable() {
   const { opportunities, isLoading, lastUpdated, refresh } = useScreener();
+  const [nextSymbol, setNextSymbol] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchNext = async () => {
+      try {
+        const res = await fetch('/api/next-entry');
+        const data = await res.json();
+        if (data?.symbol && data?.readyToTrade) {
+          setNextSymbol(data.symbol);
+        } else {
+          setNextSymbol(null);
+        }
+      } catch (e) {
+        console.error('[FundingTable] next-entry fetch:', e);
+      }
+    };
+    fetchNext();
+    const interval = setInterval(fetchNext, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
   if (isLoading && (!opportunities || opportunities.length === 0)) {
     return (
@@ -62,8 +87,17 @@ export default function FundingTable() {
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
-            {opportunities.map((row: FundingSpreadOpportunity) => (
-              <tr key={row.symbol} className="hover:bg-white/5 transition-colors group">
+            {opportunities.map((row: FundingSpreadOpportunity) => {
+              const isNext = nextSymbol && (row.symbol === nextSymbol || normalizeSymbol(row.symbol) === normalizeSymbol(nextSymbol));
+              return (
+              <tr
+                key={row.symbol}
+                className={`transition-colors group ${
+                  isNext
+                    ? 'bg-yellow-500/10 border-l-4 border-l-yellow-500/50 shadow-[0_0_15px_rgba(234,179,8,0.2)]'
+                    : 'hover:bg-white/5'
+                }`}
+              >
                 <td className="p-4 font-bold text-white group-hover:text-cyan-400 transition-colors">
                   {row.symbol.replace('/USDT', '').replace(':USDT', '')}
                   <div className="text-[10px] text-white/30 font-normal">USDT Perp</div>
@@ -93,7 +127,8 @@ export default function FundingTable() {
                   {Math.round(row.score)}
                 </td>
               </tr>
-            ))}
+            );
+            })}
           </tbody>
         </table>
       </div>
