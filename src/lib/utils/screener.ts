@@ -35,61 +35,67 @@ function getMinSpreadDecimal(): number {
   }
 }
 
+/** Raw info shape from exchanges (Binance / Bybit) */
+type RateInfo = {
+  fundingIntervalHours?: number | string;
+  fundingInterval?: string | number;
+  interval?: string | number;
+  fundingPeriod?: string | number;
+  [key: string]: unknown;
+};
+
 /**
- * Robust interval parser.
- * Converts numeric minutes (60/120/240/480) or strings to standard '1h', '2h', '4h', '8h'.
- * Explicitly recognizes '60' and '1h' so valid 1h tokens are not forced to 8h.
+ * Deep raw data extraction. No defaults – if interval cannot be determined, returns null.
+ * Binance: fundingIntervalHours, interval, fundingPeriod.
+ * Bybit: fundingInterval (often minutes e.g. '60').
  */
-function normalizeInterval(interval: string | number | undefined): string {
-  if (interval == null || interval === '') return '8h';
+function normalizeInterval(rate: FundingRate): string | null {
+  let raw: string | number | undefined = rate.interval;
 
-  const strVal = String(interval).toLowerCase().trim();
-
-  // Explicit string matches for 1h/2h so they are never mis-parsed as 8h
-  if (strVal === '1' || strVal === '60' || strVal.includes('1h')) return '1h';
-  if (strVal === '2' || strVal === '120' || strVal.includes('2h')) return '2h';
-  if (strVal === '4' || strVal === '240' || strVal.includes('4h')) return '4h';
-  if (strVal === '8' || strVal === '480' || strVal.includes('8h')) return '8h';
-
-  const numVal = parseInt(strVal, 10);
-  if (!isNaN(numVal)) {
-    if (numVal === 60 || numVal === 1) return '1h';
-    if (numVal === 120 || numVal === 2) return '2h';
-    if (numVal === 240 || numVal === 4) return '4h';
-    if (numVal === 480 || numVal === 8 || numVal >= 480) return '8h';
+  if (raw == null || raw === '') {
+    const info = rate.info as RateInfo | undefined;
+    if (info) {
+      if (info.fundingIntervalHours != null) raw = String(info.fundingIntervalHours) + 'h';
+      else if (info.fundingInterval != null) raw = info.fundingInterval;
+      else if (info.interval != null) raw = info.interval;
+      else if (info.fundingPeriod != null) raw = info.fundingPeriod;
+    }
   }
 
-  return '8h';
+  if (raw == null || raw === '') return null;
+
+  const str = String(raw).toLowerCase().trim();
+  const num = parseInt(str, 10);
+
+  if (!isNaN(num)) {
+    if (num === 60 || num === 1) return '1h';
+    if (num === 120 || num === 2) return '2h';
+    if (num === 240 || num === 4) return '4h';
+    if (num === 480 || num === 8) return '8h';
+  }
+
+  if (str.includes('1h')) return '1h';
+  if (str.includes('2h')) return '2h';
+  if (str.includes('4h')) return '4h';
+  if (str.includes('8h')) return '8h';
+
+  return null;
 }
 
-function getIntervalFromRate(rate: FundingRate): string {
-  const info = rate.info as { fundingInterval?: string; interval?: string } | undefined;
-  return normalizeInterval(rate.interval ?? info?.fundingInterval ?? info?.interval);
-}
-
+/** Called only when binInt and byInt are already non-null and equal. */
 function evaluateOpportunity(
   symbol: string,
   binRate: FundingRate,
   byRate: FundingRate,
-  minSpread: number
+  minSpread: number,
+  binInt: string,
+  byInt: string
 ): FundingSpreadOpportunity | null {
-
-  // 1. Get Intervals
-  const binInt = getIntervalFromRate(binRate);
-  const byInt = getIntervalFromRate(byRate);
-
-  // 2. STRICT RULE: Intervals MUST match
-  if (binInt !== byInt) {
-    return null;
-  }
 
   const binFunding = binRate.fundingRate ?? 0;
   const byFunding = byRate.fundingRate ?? 0;
 
-  // 3. Calculate Spread
   const spread = Math.abs(binFunding - byFunding);
-
-  // 4. Filter by Min Spread
   if (spread < minSpread) {
     return null;
   }
@@ -108,7 +114,7 @@ function evaluateOpportunity(
   return {
     symbol,
     spread,
-    displaySpread: spread, // Show full spread
+    displaySpread: spread,
     binanceRate: binFunding,
     bybitRate: byFunding,
     binancePrice: binRate.markPrice ?? 0,
@@ -117,9 +123,9 @@ function evaluateOpportunity(
     shortExchange,
     binanceInterval: binInt,
     bybitInterval: byInt,
-    primaryInterval: binInt, // Since they are same
+    primaryInterval: binInt,
     isAsymmetric: false,
-    score: Math.max(1, Math.round(spread * 10000)) // e.g. 0.44% -> 44; never 0 so bot doesn't ignore
+    score: Math.max(1, Math.round(spread * 10000))
   };
 }
 
@@ -142,31 +148,46 @@ export function calculateFundingSpreads(
 
   console.log(`[Screener] Checking ${commonTokens.length} tokens. Min Spread: ${(minSpread * 100).toFixed(4)}%`);
 
+  let skippedUnknown = 0;
   let skippedMismatch = 0;
   let skippedLowSpread = 0;
+  let logNullCount = 0;
 
   for (const symbol of commonTokens) {
     const binRate = binanceRates[symbol];
     const byRate = bybitRates[symbol];
     if (!binRate || !byRate) continue;
 
-    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread);
+    const binInt = normalizeInterval(binRate);
+    const byInt = normalizeInterval(byRate);
 
+    if (binInt == null || byInt == null) {
+      if (logNullCount < 3) {
+        console.log(`[Screener] Missing interval for ${symbol}: Binance info=${JSON.stringify(binRate.info ?? {}).substring(0, 120)}`);
+        console.log(`[Screener]   Bybit info=${JSON.stringify(byRate.info ?? {}).substring(0, 120)}`);
+        logNullCount++;
+      }
+      skippedUnknown++;
+      continue;
+    }
+
+    if (binInt !== byInt) {
+      skippedMismatch++;
+      continue;
+    }
+
+    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread, binInt, byInt);
     if (opp) {
       opportunities.push(opp);
     } else {
-      const binInt = getIntervalFromRate(binRate);
-      const byInt = getIntervalFromRate(byRate);
-      if (binInt !== byInt) skippedMismatch++;
-      else skippedLowSpread++;
+      skippedLowSpread++;
     }
   }
 
-  // Sort by Score / Spread (Highest First)
   opportunities.sort((a, b) => b.score - a.score);
 
   console.log(`[Screener] Found ${opportunities.length} valid opportunities.`);
-  console.log(`[Screener] Skipped: ${skippedMismatch} (Interval Mismatch), ${skippedLowSpread} (Low Spread)`);
+  console.log(`[Screener] Skipped: ${skippedUnknown} (Unknown interval), ${skippedMismatch} (Interval Mismatch), ${skippedLowSpread} (Low Spread)`);
 
   return opportunities;
 }
