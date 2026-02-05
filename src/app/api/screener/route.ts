@@ -28,6 +28,7 @@ export async function GET() {
       primaryInterval: opp.primaryInterval,
       binanceInterval: opp.binanceInterval,
       bybitInterval: opp.bybitInterval,
+      strategy: opp.strategy,
       isAsymmetric: opp.isAsymmetric,
       score: opp.score,
       spreadDisplay: `${(opp.displaySpread * 100).toFixed(4)}%`,

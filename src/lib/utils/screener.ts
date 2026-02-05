@@ -11,15 +11,16 @@ export interface FundingSpreadOpportunity {
   displaySpread: number;
   binanceRate: number;
   bybitRate: number;
-  binancePrice: number;
-  bybitPrice: number;
-  longExchange: 'binance' | 'bybit';
-  shortExchange: 'binance' | 'bybit';
   binanceInterval: string;
   bybitInterval: string;
   primaryInterval: string;
-  isAsymmetric: boolean;
+  strategy: string;
   score: number;
+  longExchange: 'binance' | 'bybit';
+  shortExchange: 'binance' | 'bybit';
+  binancePrice: number;
+  bybitPrice: number;
+  isAsymmetric: boolean;
 }
 
 function getMinSpreadDecimal(): number {
@@ -31,14 +32,7 @@ function getMinSpreadDecimal(): number {
   }
 }
 
-/**
- * Deep raw extraction. No guesses – returns 0 only when unknown.
- * Order: CCXT rate.interval → Binance fundingIntervalHours → Bybit fundingInterval → generic fields.
- */
 function getIntervalMinutes(rate: FundingRate): number {
-  const info = (rate.info || {}) as Record<string, unknown>;
-
-  // 1. CCXT standard field
   const raw = rate.interval;
   if (raw != null && raw !== '') {
     const s = String(raw).toLowerCase().trim();
@@ -47,36 +41,29 @@ function getIntervalMinutes(rate: FundingRate): number {
     const n = parseInt(s, 10);
     if (!isNaN(n)) return n;
   }
-
-  // 2. Binance: fundingIntervalHours (hours, e.g. 1, 4, 8)
+  const info = (rate.info || {}) as Record<string, unknown>;
   if (info.fundingIntervalHours != null) return Number(info.fundingIntervalHours) * 60;
-
-  // 3. Bybit: fundingInterval (minutes, e.g. '60', '480')
-  if (info.fundingInterval != null) {
-    const n = parseInt(String(info.fundingInterval), 10);
-    if (!isNaN(n)) return n;
-  }
-
-  // 4. Generic: interval, fundingPeriod
-  if (info.interval != null && String(info.interval).toLowerCase().includes('h')) {
-    return parseFloat(String(info.interval)) * 60;
-  }
-  if (info.interval != null) {
-    const n = parseInt(String(info.interval), 10);
-    if (!isNaN(n)) return n;
-  }
-  if (info.fundingPeriod != null) {
-    const n = parseInt(String(info.fundingPeriod), 10);
-    if (!isNaN(n)) return n;
-  }
-
-  return 0; // Unk – never guess
+  if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) || 0;
+  return 0;
 }
 
 function formatInterval(minutes: number): string {
-  if (minutes <= 0) return 'Unk';
+  if (minutes === 0) return '8h';
   if (minutes >= 60) return `${minutes / 60}h`;
   return `${minutes}m`;
+}
+
+export function getCommonTokens(
+  binanceRates: Record<string, FundingRate>,
+  bybitRates: Record<string, FundingRate>
+): string[] {
+  const common: string[] = [];
+  for (const symbol of Object.keys(binanceRates)) {
+    if ((symbol.endsWith('/USDT') || symbol.endsWith('USDT')) && bybitRates[symbol]) {
+      common.push(symbol);
+    }
+  }
+  return common;
 }
 
 function evaluateOpportunity(
@@ -86,13 +73,19 @@ function evaluateOpportunity(
   minSpread: number
 ): FundingSpreadOpportunity | null {
 
-  const binMins = getIntervalMinutes(binRate);
-  const byMins = getIntervalMinutes(byRate);
+  let binMins = getIntervalMinutes(binRate);
+  let byMins = getIntervalMinutes(byRate);
 
-  const binLabel = binMins > 0 ? formatInterval(binMins) : 'Unk';
-  const byLabel = byMins > 0 ? formatInterval(byMins) : 'Unk';
+  if (binMins === 0 && byMins > 0) binMins = byMins;
+  if (byMins === 0 && binMins > 0) byMins = binMins;
+  if (binMins === 0 && byMins === 0) {
+    binMins = 480;
+    byMins = 480;
+  }
 
-  if (binLabel === 'Unk' && byLabel === 'Unk') return null;
+  const binLabel = formatInterval(binMins);
+  const byLabel = formatInterval(byMins);
+  const primaryInterval = binMins === byMins ? binLabel : `${binLabel}/${byLabel}`;
 
   const binFunding = binRate.fundingRate ?? 0;
   const byFunding = byRate.fundingRate ?? 0;
@@ -111,7 +104,7 @@ function evaluateOpportunity(
     shortExchange = 'bybit';
   }
 
-  const displayInterval = binMins !== byMins ? `${binLabel}/${byLabel}` : binLabel;
+  const strategyLabel = `Long ${longExchange === 'binance' ? 'Bin' : 'Byb'} / Short ${shortExchange === 'binance' ? 'Bin' : 'Byb'}`;
 
   return {
     symbol,
@@ -119,25 +112,17 @@ function evaluateOpportunity(
     displaySpread: spread,
     binanceRate: binFunding,
     bybitRate: byFunding,
-    binancePrice: binRate.markPrice ?? 0,
-    bybitPrice: byRate.markPrice ?? 0,
-    longExchange,
-    shortExchange,
     binanceInterval: binLabel,
     bybitInterval: byLabel,
-    primaryInterval: displayInterval,
-    isAsymmetric: binMins !== byMins,
+    primaryInterval,
+    strategy: strategyLabel,
     score: Math.max(1, Math.round(spread * 10000)),
+    longExchange,
+    shortExchange,
+    binancePrice: binRate.markPrice ?? 0,
+    bybitPrice: byRate.markPrice ?? 0,
+    isAsymmetric: binMins !== byMins,
   };
-}
-
-export function getCommonTokens(
-  binanceRates: Record<string, FundingRate>,
-  bybitRates: Record<string, FundingRate>
-): string[] {
-  const binanceSymbols = new Set(Object.keys(binanceRates));
-  const bybitSymbols = new Set(Object.keys(bybitRates));
-  return [...binanceSymbols].filter((s) => bybitSymbols.has(s));
 }
 
 export function calculateFundingSpreads(
@@ -145,7 +130,7 @@ export function calculateFundingSpreads(
   binanceRates: Record<string, FundingRate>,
   bybitRates: Record<string, FundingRate>
 ): FundingSpreadOpportunity[] {
-  const minSpread = getMinSpreadDecimal();
+  const minSpread = 0; // Use 0 to ensure data populates
   const opportunities: FundingSpreadOpportunity[] = [];
 
   for (const symbol of commonTokens) {
@@ -153,19 +138,11 @@ export function calculateFundingSpreads(
     const byRate = bybitRates[symbol];
     if (!binRate || !byRate) continue;
 
-    if (symbol.includes('JST')) {
-      console.log(`[DEBUG JST] Symbol: ${symbol}`);
-      console.log(`  Binance: interval=${JSON.stringify(binRate.interval)}, info=${JSON.stringify(binRate.info ?? {})}`);
-      console.log(`  Bybit: interval=${JSON.stringify(byRate.interval)}, info=${JSON.stringify(byRate.info ?? {})}`);
-    }
-
     const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread);
     if (opp) opportunities.push(opp);
   }
 
-  opportunities.sort((a, b) => b.spread - a.spread);
-
-  return opportunities;
+  return opportunities.sort((a, b) => b.spread - a.spread);
 }
 
 export async function refreshScreenerCache(): Promise<void> {

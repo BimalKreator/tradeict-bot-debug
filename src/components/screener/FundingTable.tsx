@@ -51,16 +51,15 @@ export default function FundingTable() {
             {opportunities.map((row: FundingSpreadOpportunity) => {
               const displaySpread = typeof row.displaySpread === 'number' ? row.displaySpread : row.spread;
               const score = typeof row.score === 'number' ? row.score : 0;
-              const intervalLabel = row.isAsymmetric
-                ? `${row.binanceInterval ?? '?'}/${row.bybitInterval ?? '?'}`
-                : (row.primaryInterval ?? '-');
+              const intervalLabel = row.primaryInterval ?? (row.binanceInterval && row.bybitInterval ? `${row.binanceInterval}/${row.bybitInterval}` : '-');
+              const strategyLabel = row.strategy ?? `Long ${row.longExchange} / Short ${row.shortExchange}`;
               return (
                 <tr
                   key={row.symbol}
                   className="border-b border-white/5 transition-colors hover:bg-white/5"
                 >
                   <td className="px-4 py-3 font-medium text-white">
-                    {row.symbol}
+                    {row.symbol.replace('/USDT:USDT', '').replace('/USDT', '')}
                     <div className="text-xs text-white/60 font-normal">
                       L: {row.longExchange} / S: {row.shortExchange}
                     </div>
@@ -81,14 +80,8 @@ export default function FundingTable() {
                   </td>
 
                   <td className="px-4 py-3 text-center">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full ${
-                        row.isAsymmetric
-                          ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                          : 'bg-[#10b981]/20 text-[#10b981] border border-[#10b981]/40'
-                      }`}
-                    >
-                      {row.isAsymmetric ? 'Freq. Arb' : 'Standard'}
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                      {strategyLabel}
                     </span>
                   </td>
 
