@@ -4,7 +4,7 @@ import { ExchangeManager } from '../exchanges/manager';
 let opportunityCache: FundingSpreadOpportunity[] = [];
 let lastCacheUpdate = 0;
 
-// REMOVE JUNK & MISMATCHED TOKENS
+// Clean Blacklist
 const BLACKLIST = ['GPS', 'SKR', 'ENSO', 'ORBS', 'CVX', 'USDC', 'WAVES', 'DGB', 'BTS', 'PERP', 'TORN', 'OMG'];
 
 export interface FundingSpreadOpportunity {
@@ -22,44 +22,37 @@ export interface FundingSpreadOpportunity {
   shortExchange: 'binance' | 'bybit';
   binancePrice: number;
   bybitPrice: number;
-  isAsymmetric: boolean;
+  isSafe: boolean;
 }
 
-function getIntervalMinutes(rate: FundingRate): number {
+function getIntervalMinutes(rate: FundingRate, exchange: string): number {
   const info = (rate.info || {}) as Record<string, unknown>;
 
-  // 1. TRUST RAW FIELDS FIRST (Most Accurate)
-  // Binance: 'fundingIntervalHours' is reliable.
-  if (info.fundingIntervalHours != null) return parseFloat(String(info.fundingIntervalHours)) * 60;
-
-  // Bybit: 'fundingInterval' (minutes)
-  if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) || 0;
-
-  // 2. Fallback to CCXT standardized field (Only if looks valid - EXACT match to avoid "flow" matching "1h")
-  if (rate.interval) {
-    const s = String(rate.interval).toLowerCase().trim();
-    if (s === '1h' || s === '60m' || s === '60') return 60;
-    if (s === '2h' || s === '120m' || s === '120') return 120;
-    if (s === '4h' || s === '240m' || s === '240') return 240;
-    if (s === '8h' || s === '480m' || s === '480') return 480;
+  // 1. Bybit (Explicit): fundingIntervalHour (singular)
+  if (exchange === 'bybit' && info.fundingIntervalHour != null) {
+    return parseInt(String(info.fundingIntervalHour), 10) * 60;
   }
 
-  return 0; // Unknown
+  // 2. Binance (Implicit/Default): API doesn't send interval. Standard is 8h.
+  // We rely on Timestamp Matching for actual safety.
+  if (exchange === 'binance') {
+    return 480;
+  }
+
+  // 3. CCXT Fallback
+  if (rate.interval) {
+    const s = String(rate.interval).toLowerCase();
+    if (s.includes('h')) return parseFloat(s) * 60;
+    if (s.includes('m')) return parseFloat(s);
+  }
+
+  return 480; // Default to 8h if unknown
 }
 
 function formatInterval(minutes: number): string {
   if (minutes === 0) return 'Unk';
   if (minutes >= 60) return `${minutes / 60}h`;
   return `${minutes}m`;
-}
-
-function parseIntervalToMinutes(intervalStr: string): number {
-  const s = String(intervalStr).toLowerCase();
-  if (s.includes('1h') || s === '60') return 60;
-  if (s.includes('2h') || s === '120') return 120;
-  if (s.includes('4h') || s === '240') return 240;
-  if (s.includes('8h') || s === '480') return 480;
-  return 480;
 }
 
 export function getCommonTokens(
@@ -72,9 +65,10 @@ export function getCommonTokens(
     if (!bybitRates[symbol]) continue;
 
     const binRate = binanceRates[symbol];
-    // Filter Dead Markets
-    if (!binRate?.fundingRate) continue;
-    if (!bybitRates[symbol].fundingRate) continue;
+    const byRate = bybitRates[symbol];
+    // Ignore 0 funding (Dead Markets)
+    if (binRate?.fundingRate == null || binRate.fundingRate === 0) continue;
+    if (byRate?.fundingRate == null || byRate.fundingRate === 0) continue;
 
     const base = symbol.split('/')[0].replace('1000', '');
     if (BLACKLIST.includes(base)) continue;
@@ -90,19 +84,30 @@ function evaluateOpportunity(
   byRate: FundingRate,
   minSpread: number
 ): FundingSpreadOpportunity | null {
-  const binMins = getIntervalMinutes(binRate);
-  const byMins = getIntervalMinutes(byRate);
-
-  // STRICT FILTER: If unknown or mismatched, DISCARD.
-  // Do NOT show them. The auto-trader blindly trusts the list.
-  if (binMins === 0 || byMins === 0) return null;
-  if (binMins !== byMins) return null;
-
+  // 1. Rates
   const binFunding = binRate.fundingRate ?? 0;
   const byFunding = byRate.fundingRate ?? 0;
-  const spread = Math.abs(binFunding - byFunding);
+  if (binFunding === 0 || byFunding === 0) return null;
 
+  const spread = Math.abs(binFunding - byFunding);
   if (spread < minSpread) return null;
+
+  // 2. Intervals (Display only)
+  const binMins = getIntervalMinutes(binRate, 'binance');
+  const byMins = getIntervalMinutes(byRate, 'bybit');
+  const binLabel = formatInterval(binMins);
+  const byLabel = formatInterval(byMins);
+
+  // 3. CRITICAL SAFETY CHECK: Timestamp Synchronization
+  // Both exchanges must pay out at roughly the same time.
+  const binTime = binRate.fundingTimestamp || 0;
+  const byTime = byRate.fundingTimestamp || 0;
+
+  // Tolerance of 15 minutes (to handle minor clock skews)
+  const timeDiff = Math.abs(binTime - byTime);
+  const timesMatch = timeDiff < 15 * 60 * 1000;
+
+  const isSafe = timesMatch && binTime > 0 && byTime > 0;
 
   let longExchange: 'binance' | 'bybit';
   let shortExchange: 'binance' | 'bybit';
@@ -115,7 +120,16 @@ function evaluateOpportunity(
     shortExchange = 'bybit';
   }
 
-  const intervalLabel = formatInterval(binMins);
+  let strategy = `Long ${longExchange === 'binance' ? 'Bin' : 'Byb'} / Short ${shortExchange === 'binance' ? 'Bin' : 'Byb'}`;
+  let score = spread * 10000;
+  let primaryInterval = binLabel;
+
+  if (!isSafe) {
+    strategy = '⚠️ Time Mismatch';
+    score = 0; // Block Auto-Trade
+    if (binLabel !== byLabel) primaryInterval = `${binLabel}/${byLabel}`;
+    else primaryInterval = 'Time Sync Error';
+  }
 
   return {
     symbol,
@@ -123,16 +137,16 @@ function evaluateOpportunity(
     displaySpread: spread,
     binanceRate: binFunding,
     bybitRate: byFunding,
-    binanceInterval: intervalLabel,
-    bybitInterval: intervalLabel,
-    primaryInterval: intervalLabel,
-    strategy: `Long ${longExchange === 'binance' ? 'Bin' : 'Byb'} / Short ${shortExchange === 'binance' ? 'Bin' : 'Byb'}`,
-    score: Math.max(1, Math.round(spread * 10000)),
+    binanceInterval: binLabel,
+    bybitInterval: byLabel,
+    primaryInterval,
+    strategy,
+    score,
     longExchange,
     shortExchange,
     binancePrice: binRate.markPrice ?? 0,
     bybitPrice: byRate.markPrice ?? 0,
-    isAsymmetric: false,
+    isSafe,
   };
 }
 
@@ -141,7 +155,6 @@ export function calculateFundingSpreads(
   binanceRates: Record<string, FundingRate>,
   bybitRates: Record<string, FundingRate>
 ): FundingSpreadOpportunity[] {
-  const minSpread = 0.0;
   const opportunities: FundingSpreadOpportunity[] = [];
 
   for (const symbol of commonTokens) {
@@ -149,15 +162,14 @@ export function calculateFundingSpreads(
     const byRate = bybitRates[symbol];
     if (!binRate || !byRate) continue;
 
-    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread);
+    const opp = evaluateOpportunity(symbol, binRate, byRate, 0);
     if (opp) opportunities.push(opp);
   }
 
-  // Sort: Low Interval First (Fastest Money), Then Spread Desc
+  // Sort: Safe first, then by spread desc
   return opportunities.sort((a, b) => {
-    const intA = parseIntervalToMinutes(a.primaryInterval);
-    const intB = parseIntervalToMinutes(b.primaryInterval);
-    if (intA !== intB) return intA - intB;
+    if (a.isSafe && !b.isSafe) return -1;
+    if (!a.isSafe && b.isSafe) return 1;
     return b.spread - a.spread;
   });
 }
@@ -169,14 +181,14 @@ export async function refreshScreenerCache(): Promise<void> {
     const common = getCommonTokens(binance, bybit);
     opportunityCache = calculateFundingSpreads(common, binance, bybit);
     lastCacheUpdate = Date.now();
-  } catch (err) {
-    console.error('[Screener] Refresh failed:', err);
+  } catch (e) {
+    console.error('[Screener] Refresh failed:', e);
   }
 }
 
 export function getBestOpportunities(opts?: { forceRefresh?: boolean }): FundingSpreadOpportunity[] {
   if (opts?.forceRefresh) {
-    refreshScreenerCache().catch((err) => console.error('[Screener] Force refresh failed:', err));
+    refreshScreenerCache().catch((e) => console.error('[Screener] Force refresh failed:', e));
   }
   return [...opportunityCache];
 }

@@ -40,7 +40,7 @@ function mapToCandidate(opp: FundingSpreadOpportunity): BestTradeCandidate {
     score: opp.score,
     longExchange: opp.longExchange,
     shortExchange: opp.shortExchange,
-    readyToTrade: opp.score > 0,
+    readyToTrade: opp.isSafe && opp.score > 0,
     opportunity: opp,
     timeToFundingSec: Math.floor(msToFunding / 1000),
     nextFundingAt,
@@ -49,7 +49,7 @@ function mapToCandidate(opp: FundingSpreadOpportunity): BestTradeCandidate {
 }
 
 export async function getBestTradeCandidate(): Promise<BestTradeCandidate | null> {
-  const opportunities = getBestOpportunities();
+  const opportunities = getBestOpportunities().filter((o) => o.isSafe);
   if (opportunities.length === 0) return null;
 
   const sorted = [...opportunities].sort((a, b) => b.score - a.score);
@@ -67,6 +67,7 @@ export async function getBestCandidates(
   const activeBaseKeys = new Set([...activeSymbols].map((s) => normalizeSymbol(s)));
 
   for (const opp of opportunities) {
+    if (!opp.isSafe) continue; // Skip timestamp-mismatched (FLOW, THE, etc.)
     const base = normalizeSymbol(opp.symbol);
     if (activeSymbols.has(opp.symbol) || activeBaseKeys.has(base)) continue;
 
