@@ -1,0 +1,145 @@
+import * as ccxt from 'ccxt';
+
+/**
+ * Binance exchange client configured for USDT-M Futures.
+ * Uses testnet/sandbox when process.env.USE_TESTNET is 'true'.
+ */
+export class BinanceExchange {
+  private exchange: ccxt.Exchange;
+
+  constructor() {
+    const isTestnet = process.env.USE_TESTNET === 'true';
+    this.exchange = new ccxt.binanceusdm({
+      apiKey: process.env.BINANCE_API_KEY,
+      secret: process.env.BINANCE_SECRET,
+      enableRateLimit: true,
+      ...(isTestnet && {
+        urls: {
+          api: {
+            public: 'https://testnet.binancefuture.com/fapi/v1',
+            private: 'https://testnet.binancefuture.com/fapi/v1',
+          },
+        },
+      }),
+      options: {
+        defaultType: 'future',
+      },
+    });
+  }
+
+  /**
+   * Fetches funding rates for USDT perpetuals.
+   */
+  async fetchFundingRates(): Promise<Record<string, ccxt.FundingRate>> {
+    const rates = await this.exchange.fetchFundingRates();
+    return Object.fromEntries(
+      Object.entries(rates).filter(([symbol]) =>
+        symbol.includes('/USDT') && symbol.includes(':USDT')
+      )
+    );
+  }
+
+  /**
+   * Sets leverage for a symbol.
+   */
+  async setLeverage(leverage: number, symbol: string): Promise<void> {
+    await this.exchange.setLeverage(leverage, symbol);
+  }
+
+  /**
+   * Creates a market order. Returns order with id, average price, filled amount.
+   */
+  async createMarketOrder(
+    symbol: string,
+    side: 'buy' | 'sell',
+    amount: number
+  ): Promise<{ orderId: string; price: number; quantity: number }> {
+    const order = await this.exchange.createOrder(symbol, 'market', side, amount);
+    return {
+      orderId: order.id ?? '',
+      price: order.average ?? order.price ?? 0,
+      quantity: order.filled ?? order.amount ?? amount,
+    };
+  }
+
+  /**
+   * Fetches mark price for a symbol (for margin calculations).
+   */
+  async getMarkPrice(symbol: string): Promise<number> {
+    const ticker = await this.exchange.fetchTicker(symbol);
+    return ticker.last ?? (ticker as any).mark ?? 0;
+  }
+
+  /** Position size from contracts or positionAmt (Binance raw). */
+  private static positionSize(pos: ccxt.Position): number {
+    const c = pos.contracts ?? 0;
+    const amt = (pos as unknown as { positionAmt?: number }).positionAmt;
+    const p = typeof amt === 'number' ? amt : 0;
+    return Math.abs(c || p);
+  }
+
+  /**
+   * Closes a position completely with a market order.
+   * Returns the average fill price, or 0 if no position.
+   */
+  async closePosition(symbol: string): Promise<{ price: number }> {
+    const positions = await this.exchange.fetchPositions();
+    const pos = positions.find((p) => {
+      const norm = (s: string) => (s.includes('/') ? s : `${s.replace(/USDT$/i, '')}/USDT:USDT`);
+      const match = p.symbol === symbol || norm(p.symbol) === norm(symbol);
+      return match && BinanceExchange.positionSize(p) > 0;
+    });
+    if (!pos || BinanceExchange.positionSize(pos) === 0) return { price: 0 };
+
+    const amount = BinanceExchange.positionSize(pos);
+    const sideRaw = pos.side?.toString().toLowerCase();
+    const amt = (pos as unknown as { positionAmt?: number }).positionAmt;
+    const isShort = sideRaw === 'short' || (typeof amt === 'number' && amt < 0);
+    const side = (isShort ? 'buy' : 'sell') as 'buy' | 'sell';
+    const order = await this.exchange.createOrder(symbol, 'market', side, amount);
+    const price = order.average ?? order.price ?? 0;
+    return { price: typeof price === 'number' ? price : 0 };
+  }
+
+  /**
+   * Fetches open positions from the Futures account.
+   */
+  async fetchPositions(): Promise<ccxt.Position[]> {
+    return this.exchange.fetchPositions();
+  }
+
+  /**
+   * Fetches total USDT balance for the Futures account.
+   */
+  async getBalance(): Promise<number> {
+    const balance = await this.exchange.fetchBalance();
+    const usdt = (balance.total as any)?.['USDT'] ?? 0;
+    return typeof usdt === 'number' ? usdt : 0;
+  }
+
+  /**
+   * Fetches balance and used margin (totalInitialMargin) from the Futures account.
+   * Uses fapi/v2/account for Binance USDT-M to get actual totalInitialMargin.
+   */
+  async getBalanceWithMargin(): Promise<{ balance: number; usedMargin: number }> {
+    const balance = await this.exchange.fetchBalance();
+    const usdt = (balance.total as any)?.['USDT'] ?? 0;
+    const bal = typeof usdt === 'number' ? usdt : 0;
+
+    let usedMargin = 0;
+    try {
+      const account = await (this.exchange as any).fapiPrivateV2GetAccount?.();
+      if (account?.totalInitialMargin != null) {
+        usedMargin = parseFloat(String(account.totalInitialMargin)) || 0;
+      }
+    } catch {
+      // fallback to balance.used
+    }
+    if (usedMargin === 0 && typeof (balance as any).used === 'object') {
+      const used = (balance as any).used?.['USDT'];
+      usedMargin = typeof used === 'number' ? used : parseFloat(String(used || 0)) || 0;
+    }
+
+    return { balance: bal, usedMargin };
+  }
+}
