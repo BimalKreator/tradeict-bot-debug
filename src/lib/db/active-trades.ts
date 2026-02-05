@@ -29,7 +29,7 @@ export function insertActiveTrade(params: InsertActiveTradeParams): void {
   try {
     db.db
       .prepare(
-        `INSERT INTO active_trades (
+        `INSERT OR REPLACE INTO active_trades (
           symbol, status, long_exchange, short_exchange,
           quantity, leverage, entry_price_binance, entry_price_bybit
         ) VALUES (?, 'ACTIVE', ?, ?, ?, ?, ?, ?)`

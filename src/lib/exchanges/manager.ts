@@ -412,7 +412,21 @@ export class ExchangeManager {
   }
 
   /**
+   * Returns the common (most restrictive) lot size step for both exchanges.
+   * Use this to round quantity down so both legs execute identical amounts.
+   */
+  async getCommonLotSizeStep(symbol: string): Promise<number> {
+    const [binStep, bybitStep] = await Promise.all([
+      this.binance.getLotSizeStep(symbol).catch(() => 0.001),
+      this.bybit.getLotSizeStep(symbol).catch(() => 0.001),
+    ]);
+    const step = Math.max(binStep, bybitStep, 0.001);
+    return step;
+  }
+
+  /**
    * Executes a dual-legged trade on Binance and Bybit with rollback on failure.
+   * Rounds quantity to common lot size so both legs execute identical amounts.
    */
   async executeDualTrade(
     symbol: string,
@@ -420,6 +434,16 @@ export class ExchangeManager {
     leverage: number,
     sides: DualTradeSides
   ): Promise<{ success: true; tradeId: string }> {
+    const step = await this.getCommonLotSizeStep(symbol);
+    const finalQuantity = Math.floor(quantity / step) * step;
+    if (finalQuantity <= 0) {
+      throw new Error(`Quantity ${quantity} rounds to zero with step ${step}`);
+    }
+    if (Math.abs(finalQuantity - quantity) > step * 0.5) {
+      console.log(`[Executor] Raw: ${quantity}, Step: ${step}, Final: ${finalQuantity}`);
+    }
+    quantity = finalQuantity;
+
     // a. Check balances on both exchanges
     const [binanceBalance, bybitBalance] = await Promise.all([
       this.binance.getBalance(),

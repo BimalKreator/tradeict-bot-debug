@@ -63,6 +63,24 @@ export class BinanceExchange {
   }
 
   /**
+   * Returns lot size step (precision.amount) for a symbol. Used for common lot size rounding.
+   */
+  async getLotSizeStep(symbol: string): Promise<number> {
+    try {
+      const markets = await this.exchange.loadMarkets();
+      const m = markets[symbol] ?? Object.values(markets).find((x: any) => x.id === symbol?.split('/')[0] + 'USDT');
+      const step = (m as any)?.precision?.amount;
+      if (typeof step === 'number' && step > 0) return step;
+      const info = (m as any)?.info;
+      if (info?.quantityPrecision != null) return Math.pow(10, -Number(info.quantityPrecision));
+      if (info?.lotSizeFilter?.stepSize != null) return parseFloat(String(info.lotSizeFilter.stepSize));
+      return 0.001;
+    } catch {
+      return 0.001;
+    }
+  }
+
+  /**
    * Fetches mark price for a symbol (for margin calculations).
    */
   async getMarkPrice(symbol: string): Promise<number> {
