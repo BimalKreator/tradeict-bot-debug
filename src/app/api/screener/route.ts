@@ -13,6 +13,7 @@ export async function GET() {
       opportunities = getBestOpportunities();
     }
     
+    // Return full list of opportunities (no .slice limit) so dashboard shows all 50+
     const formatted = opportunities.map(opp => ({
       symbol: opp.symbol,
       spread: opp.spread,

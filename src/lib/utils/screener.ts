@@ -37,29 +37,29 @@ function getMinSpreadDecimal(): number {
 
 /**
  * Robust interval parser.
- * Converts numeric minutes (480) or strings to standard '8h', '4h', '1h'.
- * Defaults to '8h' if unknown to prevent skipping data.
+ * Converts numeric minutes (60/120/240/480) or strings to standard '1h', '2h', '4h', '8h'.
+ * Explicitly recognizes '60' and '1h' so valid 1h tokens are not forced to 8h.
  */
 function normalizeInterval(interval: string | number | undefined): string {
-  if (interval == null || interval === '') return '8h'; // Default to standard
+  if (interval == null || interval === '') return '8h';
 
   const strVal = String(interval).toLowerCase().trim();
-  const numVal = parseInt(strVal, 10);
 
-  // Handle numeric minutes
+  // Explicit string matches for 1h/2h so they are never mis-parsed as 8h
+  if (strVal === '1' || strVal === '60' || strVal.includes('1h')) return '1h';
+  if (strVal === '2' || strVal === '120' || strVal.includes('2h')) return '2h';
+  if (strVal === '4' || strVal === '240' || strVal.includes('4h')) return '4h';
+  if (strVal === '8' || strVal === '480' || strVal.includes('8h')) return '8h';
+
+  const numVal = parseInt(strVal, 10);
   if (!isNaN(numVal)) {
     if (numVal === 60 || numVal === 1) return '1h';
     if (numVal === 120 || numVal === 2) return '2h';
     if (numVal === 240 || numVal === 4) return '4h';
-    if (numVal >= 480 || numVal === 8) return '8h';
+    if (numVal === 480 || numVal === 8 || numVal >= 480) return '8h';
   }
 
-  // Handle string values
-  if (strVal.includes('1h')) return '1h';
-  if (strVal.includes('2h')) return '2h';
-  if (strVal.includes('4h')) return '4h';
-
-  return '8h'; // Default fallback
+  return '8h';
 }
 
 function getIntervalFromRate(rate: FundingRate): string {
@@ -119,7 +119,7 @@ function evaluateOpportunity(
     bybitInterval: byInt,
     primaryInterval: binInt, // Since they are same
     isAsymmetric: false,
-    score: spread // Rank purely by profit
+    score: Math.max(1, Math.round(spread * 10000)) // e.g. 0.44% -> 44; never 0 so bot doesn't ignore
   };
 }
 
@@ -162,8 +162,8 @@ export function calculateFundingSpreads(
     }
   }
 
-  // Sort by Spread (Highest First)
-  opportunities.sort((a, b) => b.spread - a.spread);
+  // Sort by Score / Spread (Highest First)
+  opportunities.sort((a, b) => b.score - a.score);
 
   console.log(`[Screener] Found ${opportunities.length} valid opportunities.`);
   console.log(`[Screener] Skipped: ${skippedMismatch} (Interval Mismatch), ${skippedLowSpread} (Low Spread)`);
