@@ -14,7 +14,7 @@ const LivePositionsPanel = dynamic(
 );
 
 const FundingTable = dynamic(
-  () => import('../components/screener/FundingTable').then((m) => m.FundingTable),
+  () => import('../components/screener/FundingTable').then((m) => m.default),
   { ssr: false }
 );
 
@@ -100,10 +100,7 @@ export default function Home() {
                 </h2>
                 <FundingCountdown />
               </div>
-              <FundingTable
-                autoEntryEnabled={(settings.auto_entry_enabled ?? 1) === 1}
-                manualTradingEnabled={(settings.manual_trading_enabled ?? 1) === 1}
-              />
+              <FundingTable />
             </section>
           </>
         )}
