@@ -1,12 +1,12 @@
 import { db } from '../db/sqlite';
 import { addNotification } from '../db/notifications';
 import { canEnterTrade } from '../entry/validator';
-import { calculateAllocation } from '../entry/allocator';
-import { ExchangeManager } from '../exchanges/manager';
+import { executeDualTrade } from '../logic/trade-executor';
 import type { FundingSpreadOpportunity } from '../utils/screener';
 
-const DEDUP_MS = 60 * 1000;
-const lastExecuted = new Map<string, number>();
+// Global Blacklist for failed tokens (Reset on restart)
+const FAILED_COOLDOWN = new Map<string, number>();
+const COOLDOWN_DURATION = 15 * 60 * 1000; // 15 Minutes
 
 function normalizeSymbol(symbol: string): string {
   if (!symbol) return '';
@@ -15,19 +15,26 @@ function normalizeSymbol(symbol: string): string {
   return s.replace(/USDT:?USDT?$/i, '');
 }
 
-/**
- * Execute sniper entry for a symbol. Deduplicates by symbol within 1 minute.
- */
 export async function executeEntry(
   symbol: string,
   opportunity: FundingSpreadOpportunity
 ): Promise<void> {
   const base = normalizeSymbol(symbol);
   const now = Date.now();
-  const last = lastExecuted.get(base);
-  if (last != null && now - last < DEDUP_MS) {
-    console.log(`[AutoEntry] Skipping ${symbol}: dedup (last ${Math.round((now - last) / 1000)}s ago)`);
-    return;
+
+  // 1. Check Cooldown
+  if (FAILED_COOLDOWN.has(base) || FAILED_COOLDOWN.has(symbol)) {
+    const key = FAILED_COOLDOWN.has(base) ? base : symbol;
+    const failedAt = FAILED_COOLDOWN.get(key) ?? 0;
+    const remaining = COOLDOWN_DURATION - (now - failedAt);
+    if (remaining > 0) {
+      console.log(
+        `[AutoEntry] 🛑 Skipping ${symbol} (Cooldown active for ${Math.round(remaining / 1000)}s)`
+      );
+      return;
+    }
+    FAILED_COOLDOWN.delete(base);
+    FAILED_COOLDOWN.delete(symbol);
   }
 
   const validation = canEnterTrade(symbol);
@@ -36,49 +43,32 @@ export async function executeEntry(
     return;
   }
 
-  lastExecuted.set(base, now);
+  console.log(`[AutoEntry] 🚀 Attempting entry on ${symbol}...`);
 
-  const fullSymbol = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
-  const avgPrice =
-    (opportunity.binancePrice + opportunity.bybitPrice) / 2 || opportunity.binancePrice || opportunity.bybitPrice;
-
-  let quantity: number;
-  let leverage: number;
   try {
-    const alloc = await calculateAllocation(avgPrice);
-    quantity = alloc.quantity;
-    if (quantity <= 0) {
-      console.error('[AutoEntry] Zero quantity from allocator');
-      return;
-    }
     const settingsRow = db.db
-      .prepare('SELECT leverage FROM bot_settings WHERE id = 1')
-      .get() as { leverage: number } | undefined;
-    leverage = settingsRow?.leverage ?? 1;
-  } catch (err) {
-    console.error('[AutoEntry] Allocator failed:', err);
-    return;
-  }
+      .prepare('SELECT max_capital_percent FROM bot_settings WHERE id = 1')
+      .get() as { max_capital_percent?: number } | undefined;
+    const maxCapitalPercent = settingsRow?.max_capital_percent ?? 30;
 
-  const long = opportunity.longExchange;
-  const sides =
-    long === 'binance'
-      ? { binance: 'BUY' as const, bybit: 'SELL' as const }
-      : { binance: 'SELL' as const, bybit: 'BUY' as const };
+    const success = await executeDualTrade({
+      symbol: symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`,
+      longExchange: opportunity.longExchange,
+      shortExchange: opportunity.shortExchange,
+      amountPercent: maxCapitalPercent,
+      reason: 'Auto-Entry',
+    });
 
-  try {
-    const manager = new ExchangeManager();
-    const result = await manager.executeDualTrade(
-      fullSymbol,
-      quantity,
-      leverage,
-      sides
-    );
-    console.log(`🚀 EXECUTING AUTO TRADE: ${symbol} — ${result.tradeId}`);
-    addNotification('SUCCESS', `Opened trade for ${base}`);
+    if (success) {
+      addNotification('SUCCESS', `Opened trade for ${base}`);
+    } else {
+      console.warn(`[AutoEntry] ⚠️ Trade Failed/Rolled back for ${symbol}. Blacklisting for 15m.`);
+      FAILED_COOLDOWN.set(base, Date.now());
+      addNotification('ERROR', `Trade entry failed for ${base}`);
+    }
   } catch (err) {
-    console.error('[AutoEntry] Trade execution failed:', err);
-    lastExecuted.delete(base);
+    console.error(`[AutoEntry] ❌ Critical Error on ${symbol}:`, err);
+    FAILED_COOLDOWN.set(base, Date.now());
     addNotification('ERROR', `Trade entry failed for ${base}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

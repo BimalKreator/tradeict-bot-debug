@@ -123,6 +123,20 @@ export class ExchangeManager {
     return { binance: binanceRates, bybit: bybitRates };
   }
 
+  async getPrices(symbol: string): Promise<{ binance: number; bybit: number } | null> {
+    const fullSymbol = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
+    try {
+      const [binance, bybit] = await Promise.all([
+        this.binance.getMarkPrice(fullSymbol),
+        this.bybit.getMarkPrice(fullSymbol),
+      ]);
+      if (binance > 0 && bybit > 0) return { binance, bybit };
+    } catch (err) {
+      console.error('[ExchangeManager] getPrices failed:', err);
+    }
+    return null;
+  }
+
   /**
    * Fetches USDT balances and used margin from both exchanges in parallel.
    * Uses Promise.allSettled so one failure does not block the other.
