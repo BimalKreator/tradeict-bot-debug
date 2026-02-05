@@ -1,4 +1,5 @@
 import { getBestOpportunities, type FundingSpreadOpportunity } from '../utils/screener';
+import { cooldownManager } from '../utils/cooldown';
 import { getTimeToNextFundingMs } from '../utils/funding-time';
 
 export function normalizeSymbol(symbol: string): string {
@@ -50,8 +51,8 @@ function mapToCandidate(op: FundingSpreadOpportunity): BestTradeCandidate {
 }
 
 /**
- * Get the single best candidate not already in activeSymbols.
- * Top 1 -> Active? -> Top 2 -> ...
+ * Get the single best candidate not already in activeSymbols and not in cooldown.
+ * Top 1 -> Active? -> Top 2 -> Cooldown? -> Skip -> ...
  */
 export async function getBestTradeCandidate(
   activeSymbols: Set<string> = new Set()
@@ -59,9 +60,15 @@ export async function getBestTradeCandidate(
   const opportunities = getBestOpportunities();
   const activeBaseKeys = new Set([...activeSymbols].map((s) => normalizeSymbol(s)));
 
-  const best = opportunities.find(
-    (op) => !activeSymbols.has(op.symbol) && !activeBaseKeys.has(normalizeSymbol(op.symbol))
-  );
+  const best = opportunities.find((op) => {
+    if (activeSymbols.has(op.symbol)) return false;
+    if (activeBaseKeys.has(normalizeSymbol(op.symbol))) return false;
+    if (!cooldownManager.isReady(op.symbol)) {
+      console.log(`[Selector] Skipping ${op.symbol} (Cooldown)`);
+      return false;
+    }
+    return true;
+  });
 
   if (!best) return null;
 
@@ -69,8 +76,7 @@ export async function getBestTradeCandidate(
 }
 
 /**
- * Used by Refill Logic: Get up to `limit` candidates, skipping active symbols.
- * Top 1 -> Active? -> Top 2 -> Active? -> Top 3 -> ...
+ * Used by Refill Logic: Get up to `limit` candidates, skipping active symbols and cooldown.
  */
 export async function getBestCandidates(
   params: { activeSymbols: Set<string>; minSpreadDecimal?: number; minTimeToFundingSec?: number },
@@ -83,9 +89,9 @@ export async function getBestCandidates(
   for (const op of opportunities) {
     if (candidates.length >= limit) break;
 
-    // Skip if already active
     if (params.activeSymbols.has(op.symbol)) continue;
     if (activeBaseKeys.has(normalizeSymbol(op.symbol))) continue;
+    if (!cooldownManager.isReady(op.symbol)) continue;
 
     const candidate = mapToCandidate(op);
 

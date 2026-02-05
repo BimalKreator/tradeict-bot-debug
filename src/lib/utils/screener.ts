@@ -12,15 +12,32 @@ export interface FundingSpreadOpportunity {
   displaySpread: number;
   binanceRate: number;
   bybitRate: number;
-  binanceInterval: string;
-  bybitInterval: string;
   primaryInterval: string;
   strategy: string;
   score: number;
   longExchange: 'binance' | 'bybit';
   shortExchange: 'binance' | 'bybit';
+  binanceInterval: string;
+  bybitInterval: string;
   binancePrice: number;
   bybitPrice: number;
+}
+
+// Helper to get pure hours (Number)
+function getHours(rate: FundingRate, exchange: string): number {
+  const info = (rate.info || {}) as Record<string, unknown>;
+
+  if (exchange === 'binance') {
+    if (info.fundingIntervalHours != null) return parseFloat(String(info.fundingIntervalHours));
+    return 8; // Fallback: Binance API doesn't send interval in funding rate response
+  }
+
+  if (exchange === 'bybit') {
+    if (info.fundingIntervalHour != null) return parseFloat(String(info.fundingIntervalHour));
+    if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) / 60;
+  }
+
+  return 0;
 }
 
 export function getCommonTokens(
@@ -29,18 +46,14 @@ export function getCommonTokens(
 ): string[] {
   const common: string[] = [];
   for (const symbol of Object.keys(binanceRates)) {
-    if (!symbol.includes('USDT')) continue;
-    if (!bybitRates[symbol]) continue;
+    if (!symbol.includes('USDT') || !bybitRates[symbol]) continue;
 
     const binRate = binanceRates[symbol];
     const byRate = bybitRates[symbol];
-    // Skip 0 funding (dead markets)
     if (binRate?.fundingRate == null || binRate.fundingRate === 0) continue;
     if (byRate?.fundingRate == null || byRate.fundingRate === 0) continue;
 
-    const base = symbol.split('/')[0].replace('1000', '');
-    if (BLACKLIST.includes(base)) continue;
-
+    if (BLACKLIST.includes(symbol.split('/')[0].replace('1000', ''))) continue;
     common.push(symbol);
   }
   return common;
@@ -49,38 +62,31 @@ export function getCommonTokens(
 function evaluateOpportunity(
   symbol: string,
   binRate: FundingRate,
-  byRate: FundingRate,
-  minSpread: number
+  byRate: FundingRate
 ): FundingSpreadOpportunity | null {
-  // 1. STRICT TIMESTAMP CHECK (The Loop Killer)
-  // We don't care about string labels ("4h" vs "8h"). We care about PAYOUT TIME.
-  const binTime = binRate.fundingTimestamp || 0;
-  const byTime = byRate.fundingTimestamp || 0;
+  // 1. STRICT INTERVAL MATCH (Hours)
+  const binHours = getHours(binRate, 'binance');
+  const byHours = getHours(byRate, 'bybit');
 
-  // If timestamps are missing or differ by > 15 mins (900000ms), HIDE IT.
-  if (binTime === 0 || byTime === 0) return null;
-  const timeDiff = Math.abs(binTime - byTime);
-
-  if (timeDiff > 15 * 60 * 1000) {
+  if (binHours > 0 && byHours > 0 && binHours !== byHours) {
     return null;
   }
 
-  // 2. Funding & Spread Check
+  // 2. STRICT TIMESTAMP MATCH
+  const binTime = binRate.fundingTimestamp || 0;
+  const byTime = byRate.fundingTimestamp || 0;
+  if (binTime === 0 || byTime === 0) return null;
+  if (Math.abs(binTime - byTime) > 15 * 60 * 1000) {
+    return null;
+  }
+
+  // 3. Normal Logic
   const binFunding = binRate.fundingRate ?? 0;
   const byFunding = byRate.fundingRate ?? 0;
   if (binFunding === 0 || byFunding === 0) return null;
 
   const spread = Math.abs(binFunding - byFunding);
-  if (spread < minSpread) return null;
-
-  // 3. Interval Display (Just for UI)
-  const info = (byRate.info || {}) as Record<string, unknown>;
-  let displayInterval = '8h';
-  if (info.fundingIntervalHour != null) {
-    displayInterval = `${info.fundingIntervalHour}h`;
-  } else if (byRate.interval) {
-    displayInterval = String(byRate.interval);
-  }
+  if (spread <= 0) return null;
 
   let longExchange: 'binance' | 'bybit';
   let shortExchange: 'binance' | 'bybit';
@@ -93,15 +99,17 @@ function evaluateOpportunity(
     shortExchange = 'bybit';
   }
 
+  const intervalLabel = binHours > 0 ? `${binHours}h` : byHours > 0 ? `${byHours}h` : '8h';
+
   return {
     symbol,
     spread,
     displaySpread: spread,
     binanceRate: binFunding,
     bybitRate: byFunding,
-    binanceInterval: displayInterval,
-    bybitInterval: displayInterval,
-    primaryInterval: displayInterval,
+    primaryInterval: intervalLabel,
+    binanceInterval: intervalLabel,
+    bybitInterval: intervalLabel,
     strategy: `Long ${longExchange === 'binance' ? 'Bin' : 'Byb'} / Short ${shortExchange === 'binance' ? 'Bin' : 'Byb'}`,
     score: spread * 10000,
     longExchange,
@@ -117,17 +125,14 @@ export function calculateFundingSpreads(
   bybitRates: Record<string, FundingRate>
 ): FundingSpreadOpportunity[] {
   const opportunities: FundingSpreadOpportunity[] = [];
-
   for (const symbol of commonTokens) {
     const binRate = binanceRates[symbol];
     const byRate = bybitRates[symbol];
     if (!binRate || !byRate) continue;
 
-    const opp = evaluateOpportunity(symbol, binRate, byRate, 0);
+    const opp = evaluateOpportunity(symbol, binRate, byRate);
     if (opp) opportunities.push(opp);
   }
-
-  // Sort by spread (all remaining are safe - timestamps match)
   return opportunities.sort((a, b) => b.spread - a.spread);
 }
 

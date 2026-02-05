@@ -2,17 +2,13 @@ import { db } from '../db/sqlite';
 import { addNotification } from '../db/notifications';
 import { canEnterTrade } from '../entry/validator';
 import { executeDualTrade } from '../logic/trade-executor';
+import { cooldownManager } from '../utils/cooldown';
 import type { FundingSpreadOpportunity } from '../utils/screener';
-
-// Global Blacklist for failed tokens (Reset on restart)
-const FAILED_COOLDOWN = new Map<string, number>();
-const COOLDOWN_DURATION = 15 * 60 * 1000; // 15 Minutes
 
 function normalizeSymbol(symbol: string): string {
   if (!symbol) return '';
-  const s = symbol.trim().toUpperCase();
-  if (s.includes('/')) return s.split('/')[0];
-  return s.replace(/USDT:?USDT?$/i, '');
+  if (symbol.includes('/')) return symbol.split('/')[0];
+  return symbol.replace(/USDT:?USDT?$/i, '');
 }
 
 export async function executeEntry(
@@ -20,21 +16,10 @@ export async function executeEntry(
   opportunity: FundingSpreadOpportunity
 ): Promise<void> {
   const base = normalizeSymbol(symbol);
-  const now = Date.now();
 
-  // 1. Check Cooldown
-  if (FAILED_COOLDOWN.has(base) || FAILED_COOLDOWN.has(symbol)) {
-    const key = FAILED_COOLDOWN.has(base) ? base : symbol;
-    const failedAt = FAILED_COOLDOWN.get(key) ?? 0;
-    const remaining = COOLDOWN_DURATION - (now - failedAt);
-    if (remaining > 0) {
-      console.log(
-        `[AutoEntry] 🛑 Skipping ${symbol} (Cooldown active for ${Math.round(remaining / 1000)}s)`
-      );
-      return;
-    }
-    FAILED_COOLDOWN.delete(base);
-    FAILED_COOLDOWN.delete(symbol);
+  if (!cooldownManager.isReady(symbol)) {
+    console.log(`[AutoEntry] 🛑 Skipping ${symbol} (Cooldown)`);
+    return;
   }
 
   const validation = canEnterTrade(symbol);
@@ -43,7 +28,7 @@ export async function executeEntry(
     return;
   }
 
-  console.log(`[AutoEntry] 🚀 Attempting entry on ${symbol}...`);
+  console.log(`[AutoEntry] 🚀 Executing ${symbol}...`);
 
   try {
     const settingsRow = db.db
@@ -62,13 +47,13 @@ export async function executeEntry(
     if (success) {
       addNotification('SUCCESS', `Opened trade for ${base}`);
     } else {
-      console.warn(`[AutoEntry] ⚠️ Trade Failed/Rolled back for ${symbol}. Blacklisting for 15m.`);
-      FAILED_COOLDOWN.set(base, Date.now());
+      console.warn(`[AutoEntry] ⚠️ Trade Failed for ${symbol}. Triggering 20m Cooldown.`);
+      cooldownManager.add(symbol);
       addNotification('ERROR', `Trade entry failed for ${base}`);
     }
   } catch (err) {
-    console.error(`[AutoEntry] ❌ Critical Error on ${symbol}:`, err);
-    FAILED_COOLDOWN.set(base, Date.now());
+    console.error(`[AutoEntry] Error on ${symbol}:`, err);
+    cooldownManager.add(symbol);
     addNotification('ERROR', `Trade entry failed for ${base}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
