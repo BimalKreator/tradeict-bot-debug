@@ -24,6 +24,7 @@ export async function GET() {
       longExchange: opp.longExchange,
       shortExchange: opp.shortExchange,
       interval: opp.primaryInterval,
+      primaryInterval: opp.primaryInterval,
       binanceInterval: opp.binanceInterval,
       bybitInterval: opp.bybitInterval,
       isAsymmetric: opp.isAsymmetric,

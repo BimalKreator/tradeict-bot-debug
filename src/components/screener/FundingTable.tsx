@@ -180,7 +180,7 @@ export function FundingTable({
                   <td className="px-4 py-3 text-right tabular-nums font-medium text-white">
                     {(row.spread * 100).toFixed(4)}
                   </td>
-                  <td className="px-4 py-3 text-center text-white/80">{row.interval}</td>
+                  <td className="px-4 py-3 text-center text-white/80">{row.primaryInterval}</td>
                   <td className="px-4 py-3 text-center">
                     <span
                       className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
