@@ -1,9 +1,10 @@
 import type { FundingRate } from 'ccxt';
 import { ExchangeManager } from '../exchanges/manager';
-import { db } from '../db/sqlite';
 
 let opportunityCache: FundingSpreadOpportunity[] = [];
 let lastCacheUpdate = 0;
+
+const BLACKLIST = ['GPS', 'SKR', 'ENSO', 'ORBS', 'CVX', 'USDC'];
 
 export interface FundingSpreadOpportunity {
   symbol: string;
@@ -21,15 +22,6 @@ export interface FundingSpreadOpportunity {
   binancePrice: number;
   bybitPrice: number;
   isAsymmetric: boolean;
-}
-
-function getMinSpreadDecimal(): number {
-  try {
-    const row = db.db.prepare('SELECT min_spread_percent FROM bot_settings WHERE id = 1').get() as { min_spread_percent?: number } | undefined;
-    return (row?.min_spread_percent ?? 0.01) / 100;
-  } catch {
-    return 0.0001;
-  }
 }
 
 function getIntervalMinutes(rate: FundingRate): number {
@@ -59,9 +51,13 @@ export function getCommonTokens(
 ): string[] {
   const common: string[] = [];
   for (const symbol of Object.keys(binanceRates)) {
-    if ((symbol.endsWith('/USDT') || symbol.endsWith('USDT')) && bybitRates[symbol]) {
-      common.push(symbol);
-    }
+    if (!symbol.includes('USDT')) continue;
+    if (!bybitRates[symbol]) continue;
+
+    const base = symbol.split('/')[0].replace('1000', '');
+    if (BLACKLIST.includes(base)) continue;
+
+    common.push(symbol);
   }
   return common;
 }
@@ -104,8 +100,6 @@ function evaluateOpportunity(
     shortExchange = 'bybit';
   }
 
-  const strategyLabel = `Long ${longExchange === 'binance' ? 'Bin' : 'Byb'} / Short ${shortExchange === 'binance' ? 'Bin' : 'Byb'}`;
-
   return {
     symbol,
     spread,
@@ -115,7 +109,7 @@ function evaluateOpportunity(
     binanceInterval: binLabel,
     bybitInterval: byLabel,
     primaryInterval,
-    strategy: strategyLabel,
+    strategy: `Long ${longExchange === 'binance' ? 'Bin' : 'Byb'} / Short ${shortExchange === 'binance' ? 'Bin' : 'Byb'}`,
     score: Math.max(1, Math.round(spread * 10000)),
     longExchange,
     shortExchange,
@@ -130,7 +124,7 @@ export function calculateFundingSpreads(
   binanceRates: Record<string, FundingRate>,
   bybitRates: Record<string, FundingRate>
 ): FundingSpreadOpportunity[] {
-  const minSpread = 0; // Use 0 to ensure data populates
+  const minSpread = 0;
   const opportunities: FundingSpreadOpportunity[] = [];
 
   for (const symbol of commonTokens) {
@@ -141,7 +135,6 @@ export function calculateFundingSpreads(
     const opp = evaluateOpportunity(symbol, binRate, byRate, minSpread);
     if (opp) opportunities.push(opp);
   }
-
   return opportunities.sort((a, b) => b.spread - a.spread);
 }
 
@@ -150,10 +143,6 @@ export async function refreshScreenerCache(): Promise<void> {
     const manager = new ExchangeManager();
     const { binance, bybit } = await manager.getFundingRates();
     const common = getCommonTokens(binance, bybit);
-    if (common.length === 0) {
-      console.warn('[Screener] No common tokens found.');
-      return;
-    }
     opportunityCache = calculateFundingSpreads(common, binance, bybit);
     lastCacheUpdate = Date.now();
   } catch (err) {
