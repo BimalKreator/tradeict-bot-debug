@@ -1,4 +1,4 @@
-import * as ccxt from 'ccxt';
+import { ExchangeManager } from '../exchanges/manager';
 import { db } from '../db/sqlite';
 
 /**
@@ -6,53 +6,20 @@ import { db } from '../db/sqlite';
  * Requires API keys with deposit/withdrawal history permission.
  */
 export async function syncDailyTransfers(): Promise<void> {
-  console.log('[TransferSync] 🔄 Fetching deposits/withdrawals from exchanges...');
+  console.log('[TransferSync] 🔄 Syncing deposits/withdrawals...');
+  const manager = new ExchangeManager();
 
   const now = new Date();
   const startOfDay = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
   ).getTime();
 
-  let totalDeposits = 0;
-  let totalWithdrawals = 0;
-
   try {
-    const binance = new ccxt.binanceusdm({
-      apiKey: process.env.BINANCE_API_KEY,
-      secret: process.env.BINANCE_SECRET,
-      enableRateLimit: true,
-      options: { defaultType: 'future' },
-    });
-
-    const bybit = new ccxt.bybit({
-      apiKey: process.env.BYBIT_API_KEY,
-      secret: process.env.BYBIT_SECRET,
-      enableRateLimit: true,
-      options: { defaultType: 'linear' },
-    });
-
-    // Fetch from Binance (may require spot/funding permissions)
-    try {
-      const deps = await binance.fetchDeposits?.('USDT', startOfDay) ?? [];
-      const wths = await binance.fetchWithdrawals?.('USDT', startOfDay) ?? [];
-      for (const d of deps) totalDeposits += (d.amount as number) || 0;
-      for (const w of wths) totalWithdrawals += (w.amount as number) || 0;
-    } catch (e) {
-      console.warn('[TransferSync] Binance fetch failed:', (e as Error).message);
-    }
-
-    // Fetch from Bybit
-    try {
-      const deps = await bybit.fetchDeposits?.('USDT', startOfDay) ?? [];
-      const wths = await bybit.fetchWithdrawals?.('USDT', startOfDay) ?? [];
-      for (const d of deps) totalDeposits += (d.amount as number) || 0;
-      for (const w of wths) totalWithdrawals += (w.amount as number) || 0;
-    } catch (e) {
-      console.warn('[TransferSync] Bybit fetch failed:', (e as Error).message);
-    }
+    const { deposits: totalDeposits, withdrawals: totalWithdrawals } =
+      await manager.fetchDailyTransfers(startOfDay);
 
     console.log(
-      `[TransferSync] 💰 Found: Deposits=$${totalDeposits.toFixed(2)}, Withdrawals=$${totalWithdrawals.toFixed(2)}`
+      `[TransferSync] 💰 Total Deposits: $${totalDeposits.toFixed(2)}, Withdrawals: $${totalWithdrawals.toFixed(2)}`
     );
 
     const todayStr = db.getISTDate();
@@ -77,9 +44,9 @@ export async function syncDailyTransfers(): Promise<void> {
           `INSERT INTO daily_balance_snapshots (date, opening_balance, closing_balance, total_deposits, total_withdrawals, growth_percentage) VALUES (?, ?, NULL, ?, ?, 0)`
         )
         .run(todayStr, opening, totalDeposits, totalWithdrawals);
-      console.log('[TransferSync] ✅ Inserted new snapshot row with transfers.');
+      console.log('[TransferSync] ✅ Inserted new snapshot row.');
     }
   } catch (error) {
-    console.error('[TransferSync] ❌ Failed to sync transfers:', error);
+    console.error('[TransferSync] Critical Error:', error);
   }
 }

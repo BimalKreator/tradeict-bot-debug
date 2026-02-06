@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
 import { ExchangeManager } from '../../../lib/exchanges/manager';
 import { db } from '../../../lib/db/sqlite';
+import { syncDailyTransfers } from '../../../lib/logic/transfer-sync';
 
 export const revalidate = 0;
+
+let lastTransferSync = 0;
 
 const HISTORIC_OPENING_DATE = '2026-02-03';
 const HISTORIC_OPENING_BALANCE = 95;
@@ -56,6 +59,11 @@ function getOpeningBalanceFromLedger(today: string, currentTotal: number): numbe
 export async function GET() {
   try {
     db.ensureTodaySnapshot();
+
+    if (Date.now() - lastTransferSync > 60000) {
+      syncDailyTransfers().catch(console.error);
+      lastTransferSync = Date.now();
+    }
 
     const manager = new ExchangeManager();
     const balances = await manager.getAggregatedBalances();

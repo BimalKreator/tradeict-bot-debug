@@ -120,6 +120,28 @@ export class BinanceExchange {
   }
 
   /**
+   * Fetches deposit history (may require wallet/spot API permissions).
+   */
+  async fetchDeposits(code?: string, since?: number): Promise<any[]> {
+    try {
+      return await this.exchange.fetchDeposits(code ?? 'USDT', since);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Fetches withdrawal history (may require wallet/spot API permissions).
+   */
+  async fetchWithdrawals(code?: string, since?: number): Promise<any[]> {
+    try {
+      return await this.exchange.fetchWithdrawals(code ?? 'USDT', since);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Fetches open positions from the Futures account.
    */
   async fetchPositions(): Promise<ccxt.Position[]> {

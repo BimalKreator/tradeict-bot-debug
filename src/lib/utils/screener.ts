@@ -23,23 +23,32 @@ export interface FundingSpreadOpportunity {
   bybitPrice: number;
 }
 
-function getIntervalLabel(rate: FundingRate, exchange: string): string {
+function getHours(rate: FundingRate, exchange: string): number {
   const info = (rate.info || {}) as Record<string, unknown>;
-  let hours = 0;
+
+  if (exchange === 'binance') {
+    if (info.fundingIntervalHours != null) return parseFloat(String(info.fundingIntervalHours));
+    if (rate.interval && String(rate.interval).includes('8')) return 8;
+    return 8;
+  }
 
   if (exchange === 'bybit') {
-    if (info.fundingIntervalHour != null) hours = parseFloat(String(info.fundingIntervalHour));
-    else if (info.fundingInterval != null) hours = parseInt(String(info.fundingInterval), 10) / 60;
-  } else if (exchange === 'binance') {
-    if (info.fundingIntervalHours != null) hours = parseFloat(String(info.fundingIntervalHours));
+    if (info.fundingIntervalHour != null) return parseFloat(String(info.fundingIntervalHour));
+    if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) / 60;
   }
 
-  if (hours === 0 && rate.interval) {
-    const s = String(rate.interval);
-    if (s.includes('h')) hours = parseFloat(s);
-    else if (s.includes('m')) hours = parseFloat(s) / 60;
+  if (rate.interval) {
+    const s = String(rate.interval).toLowerCase();
+    if (s.includes('h')) return parseFloat(s);
+    if (s.includes('m')) return parseFloat(s) / 60;
+    const n = parseInt(s, 10);
+    if (!isNaN(n) && n >= 60) return n / 60;
   }
 
+  return 0;
+}
+
+function getIntervalLabel(hours: number): string {
   return hours > 0 ? `${hours}h` : '8h';
 }
 
@@ -67,9 +76,13 @@ function evaluateOpportunity(
   binRate: FundingRate,
   byRate: FundingRate
 ): FundingSpreadOpportunity | null {
+  const binHours = getHours(binRate, 'binance');
+  const byHours = getHours(byRate, 'bybit');
+
+  if (binHours > 0 && byHours > 0 && binHours !== byHours) return null;
+
   const binTime = binRate.fundingTimestamp || 0;
   const byTime = byRate.fundingTimestamp || 0;
-
   if (binTime === 0 || byTime === 0) return null;
   if (Math.abs(binTime - byTime) > 15 * 60 * 1000) return null;
 
@@ -91,7 +104,7 @@ function evaluateOpportunity(
     shortExchange = 'bybit';
   }
 
-  const displayInterval = getIntervalLabel(byRate, 'bybit');
+  const label = getIntervalLabel(byHours > 0 ? byHours : binHours || 8);
 
   return {
     symbol,
@@ -99,9 +112,9 @@ function evaluateOpportunity(
     displaySpread: spread,
     binanceRate: binFunding,
     bybitRate: byFunding,
-    primaryInterval: displayInterval,
-    binanceInterval: getIntervalLabel(binRate, 'binance'),
-    bybitInterval: displayInterval,
+    primaryInterval: label,
+    binanceInterval: label,
+    bybitInterval: label,
     strategy: `Long ${longExchange === 'binance' ? 'Bin' : 'Byb'} / Short ${shortExchange === 'binance' ? 'Bin' : 'Byb'}`,
     score: spread * 10000,
     longExchange,

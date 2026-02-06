@@ -123,6 +123,39 @@ export class ExchangeManager {
     return { binance: binanceRates, bybit: bybitRates };
   }
 
+  /**
+   * Fetches daily deposits and withdrawals from both exchanges.
+   * Requires API keys with deposit/withdrawal history permission.
+   */
+  async fetchDailyTransfers(since: number): Promise<{ deposits: number; withdrawals: number }> {
+    let deposits = 0;
+    let withdrawals = 0;
+    const sumOne = async (name: string, fn: () => Promise<{ deps: any[]; wths: any[] }>) => {
+      try {
+        const { deps, wths } = await fn();
+        for (const d of deps) deposits += (d.amount as number) || 0;
+        for (const w of wths) withdrawals += (w.amount as number) || 0;
+      } catch (err) {
+        console.warn(`[TransferSync] ${name} fetch failed:`, err);
+      }
+    };
+    await Promise.all([
+      sumOne('Binance', () =>
+        Promise.all([
+          this.binance.fetchDeposits('USDT', since),
+          this.binance.fetchWithdrawals('USDT', since),
+        ]).then(([deps, wths]) => ({ deps, wths }))
+      ),
+      sumOne('Bybit', () =>
+        Promise.all([
+          this.bybit.fetchDeposits('USDT', since),
+          this.bybit.fetchWithdrawals('USDT', since),
+        ]).then(([deps, wths]) => ({ deps, wths }))
+      ),
+    ]);
+    return { deposits, withdrawals };
+  }
+
   async getPrices(symbol: string): Promise<{ binance: number; bybit: number } | null> {
     const fullSymbol = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
     try {

@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS funding_history (
 -- 3. Bot Settings
 CREATE TABLE IF NOT EXISTS bot_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    auto_entry_enabled INTEGER DEFAULT 1,
+    auto_entry_enabled INTEGER DEFAULT 0,
     auto_exit_enabled INTEGER DEFAULT 1,
     max_capital_percent REAL DEFAULT 30,
     min_spread_percent REAL DEFAULT 0,
