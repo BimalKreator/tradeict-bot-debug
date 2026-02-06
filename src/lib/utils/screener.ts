@@ -23,21 +23,24 @@ export interface FundingSpreadOpportunity {
   bybitPrice: number;
 }
 
-// Helper to get pure hours (Number)
-function getHours(rate: FundingRate, exchange: string): number {
+function getIntervalLabel(rate: FundingRate, exchange: string): string {
   const info = (rate.info || {}) as Record<string, unknown>;
-
-  if (exchange === 'binance') {
-    if (info.fundingIntervalHours != null) return parseFloat(String(info.fundingIntervalHours));
-    return 8; // Fallback: Binance API doesn't send interval in funding rate response
-  }
+  let hours = 0;
 
   if (exchange === 'bybit') {
-    if (info.fundingIntervalHour != null) return parseFloat(String(info.fundingIntervalHour));
-    if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) / 60;
+    if (info.fundingIntervalHour != null) hours = parseFloat(String(info.fundingIntervalHour));
+    else if (info.fundingInterval != null) hours = parseInt(String(info.fundingInterval), 10) / 60;
+  } else if (exchange === 'binance') {
+    if (info.fundingIntervalHours != null) hours = parseFloat(String(info.fundingIntervalHours));
   }
 
-  return 0;
+  if (hours === 0 && rate.interval) {
+    const s = String(rate.interval);
+    if (s.includes('h')) hours = parseFloat(s);
+    else if (s.includes('m')) hours = parseFloat(s) / 60;
+  }
+
+  return hours > 0 ? `${hours}h` : '8h';
 }
 
 export function getCommonTokens(
@@ -64,23 +67,12 @@ function evaluateOpportunity(
   binRate: FundingRate,
   byRate: FundingRate
 ): FundingSpreadOpportunity | null {
-  // 1. STRICT INTERVAL MATCH (Hours)
-  const binHours = getHours(binRate, 'binance');
-  const byHours = getHours(byRate, 'bybit');
-
-  if (binHours > 0 && byHours > 0 && binHours !== byHours) {
-    return null;
-  }
-
-  // 2. STRICT TIMESTAMP MATCH
   const binTime = binRate.fundingTimestamp || 0;
   const byTime = byRate.fundingTimestamp || 0;
-  if (binTime === 0 || byTime === 0) return null;
-  if (Math.abs(binTime - byTime) > 15 * 60 * 1000) {
-    return null;
-  }
 
-  // 3. Normal Logic
+  if (binTime === 0 || byTime === 0) return null;
+  if (Math.abs(binTime - byTime) > 15 * 60 * 1000) return null;
+
   const binFunding = binRate.fundingRate ?? 0;
   const byFunding = byRate.fundingRate ?? 0;
   if (binFunding === 0 || byFunding === 0) return null;
@@ -99,7 +91,7 @@ function evaluateOpportunity(
     shortExchange = 'bybit';
   }
 
-  const intervalLabel = binHours > 0 ? `${binHours}h` : byHours > 0 ? `${byHours}h` : '8h';
+  const displayInterval = getIntervalLabel(byRate, 'bybit');
 
   return {
     symbol,
@@ -107,9 +99,9 @@ function evaluateOpportunity(
     displaySpread: spread,
     binanceRate: binFunding,
     bybitRate: byFunding,
-    primaryInterval: intervalLabel,
-    binanceInterval: intervalLabel,
-    bybitInterval: intervalLabel,
+    primaryInterval: displayInterval,
+    binanceInterval: getIntervalLabel(binRate, 'binance'),
+    bybitInterval: displayInterval,
     strategy: `Long ${longExchange === 'binance' ? 'Bin' : 'Byb'} / Short ${shortExchange === 'binance' ? 'Bin' : 'Byb'}`,
     score: spread * 10000,
     longExchange,
