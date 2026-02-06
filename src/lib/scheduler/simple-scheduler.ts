@@ -3,7 +3,6 @@ import { handleSlotRefill } from './refill';
 import { checkAllExits } from '../exit/controller';
 import { startBackupJob } from './backup';
 import { maybeRunFundingAccumulation } from './funding-job';
-import { maybeRunDailySnapshot, maybeRunDailyLedgerSnapshot } from './daily-snapshot';
 import { refreshScreenerCache } from '../utils/screener';
 
 export class LocalScheduler {
@@ -64,18 +63,7 @@ export class LocalScheduler {
         maybeRunFundingAccumulation();
       }, EIGHT_HOURS_MS)
     );
-    // Daily snapshot at 00:00 IST (check every minute)
-    this.intervals.push(
-      setInterval(() => {
-        maybeRunDailySnapshot();
-      }, 60_000)
-    );
-    // Daily ledger at 18:30 UTC = 00:00 IST (true opening balance)
-    this.intervals.push(
-      setInterval(() => {
-        maybeRunDailyLedgerSnapshot();
-      }, 60_000)
-    );
+    // Daily rollover at 00:00 IST is handled by daily-rollover.ts (cron 18:30 UTC)
     // Screener cache refresh every 60s (dashboard uses cache for instant load)
     this.intervals.push(
       setInterval(() => {
