@@ -7,6 +7,8 @@ export const revalidate = 0;
 
 const HISTORIC_OPENING_DATE = '2026-02-03';
 const HISTORIC_OPENING_BALANCE = 95;
+/** Safety net when snapshot/ledger unavailable — prevents 0% growth error. */
+const FALLBACK_OPENING_BALANCE = 75;
 
 type SnapshotRow = {
   date: string;
@@ -19,7 +21,7 @@ type SnapshotRow = {
 
 type LedgerRow = { date: string; total_balance: number };
 
-function getOpeningBalanceFromLedger(today: string, currentTotal: number): number {
+function getOpeningBalanceFromLedger(today: string): number {
   if (today === HISTORIC_OPENING_DATE) return HISTORIC_OPENING_BALANCE;
 
   const ledger = db.db
@@ -33,7 +35,8 @@ function getOpeningBalanceFromLedger(today: string, currentTotal: number): numbe
       'SELECT closing_balance, opening_balance FROM daily_balance_snapshots ORDER BY date DESC LIMIT 1'
     )
     .get() as { closing_balance: number | null; opening_balance: number } | undefined;
-  return lastRow?.closing_balance ?? lastRow?.opening_balance ?? currentTotal;
+  // CRITICAL: Never use currentBalance as fallback — causes 0% growth. Use fixed $75.
+  return lastRow?.closing_balance ?? lastRow?.opening_balance ?? FALLBACK_OPENING_BALANCE;
 }
 
 export async function GET() {
@@ -70,7 +73,11 @@ export async function GET() {
 
     const todaysDeposits = snapshot?.total_deposits ?? 0;
     const todaysWithdrawals = snapshot?.total_withdrawals ?? 0;
-    const openingBalance = getOpeningBalanceFromLedger(today, liveBalances.total);
+    // If no snapshot for today, use $75 — never currentBalance (prevents 0% growth)
+    const openingBalance =
+      !snapshot
+        ? FALLBACK_OPENING_BALANCE
+        : (snapshot.opening_balance ?? getOpeningBalanceFromLedger(today));
 
     // 3. STRICT FORMULA: Growth = Live - Opening - Deposits + Withdrawals
     const growthAmt =

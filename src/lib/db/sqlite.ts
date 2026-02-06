@@ -1,15 +1,11 @@
 import Database from 'better-sqlite3';
 import { mkdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname } from 'node:path';
 
-const DATA_DIR = join(process.cwd(), 'data');
-const possiblePaths = [
-  join(process.cwd(), 'data/trading_bot.db'),
-  join(process.cwd(), 'data/data.db'),
-  join(process.cwd(), '.next/standalone/data/trading_bot.db'),
-  join(process.cwd(), '.next/standalone/data/data.db'),
-];
-const DB_PATH = possiblePaths.find((p) => existsSync(p)) ?? join(DATA_DIR, 'trading_bot.db');
+/** Hardcoded path for PM2/Next.js standalone — process.cwd() is unreliable. */
+const DB_PATH = '/root/arbitrage-bot/data/trading_bot.db';
+const DATA_DIR = dirname(DB_PATH);
+
 if (process.env.NODE_ENV !== 'test') {
   console.log(`[DB] Connecting to: ${DB_PATH}`);
 }
@@ -133,6 +129,11 @@ class DatabaseClient {
       this._db.pragma('journal_mode = WAL');
     }
     return this._db;
+  }
+
+  /** Returns the resolved DB path (for scripts/debugging). */
+  get dbPath(): string {
+    return DB_PATH;
   }
 
   init(): void {
