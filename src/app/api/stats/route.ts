@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db/sqlite';
+import { ExchangeManager } from '@/lib/exchanges/manager';
 
+export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 const HISTORIC_OPENING_DATE = '2026-02-03';
@@ -26,7 +28,6 @@ function getOpeningBalanceFromLedger(today: string, currentTotal: number): numbe
 
   if (ledger) return ledger.total_balance;
 
-  // Fallback: use yesterday's closing or last known balance
   const lastRow = db.db
     .prepare(
       'SELECT closing_balance, opening_balance FROM daily_balance_snapshots ORDER BY date DESC LIMIT 1'
@@ -37,19 +38,30 @@ function getOpeningBalanceFromLedger(today: string, currentTotal: number): numbe
 
 export async function GET() {
   try {
-    // Manual mode: no exchange API — instant load
     db.ensureTodaySnapshot();
-
     const today = db.getISTDate();
 
-    // Current balance from latest ledger entry (no exchange call)
-    const ledgerRow = db.db
-      .prepare('SELECT total_balance FROM daily_ledger ORDER BY date DESC LIMIT 1')
-      .get() as { total_balance: number } | undefined;
-    const currentTotal = ledgerRow?.total_balance ?? 0;
+    // 1. Fetch LIVE balances from Binance/Bybit
+    let liveBalances = { total: 0, binance: 0, bybit: 0, binanceUsedMargin: 0, bybitUsedMargin: 0 };
+    try {
+      const manager = new ExchangeManager();
+      const agg = await manager.getAggregatedBalances();
+      liveBalances = {
+        total: agg.total,
+        binance: agg.binance,
+        bybit: agg.bybit,
+        binanceUsedMargin: agg.binanceUsedMargin ?? 0,
+        bybitUsedMargin: agg.bybitUsedMargin ?? 0,
+      };
+    } catch (e) {
+      console.error('[Stats] Failed to fetch live balances:', e);
+      const ledgerRow = db.db
+        .prepare('SELECT total_balance FROM daily_ledger ORDER BY date DESC LIMIT 1')
+        .get() as { total_balance: number } | undefined;
+      liveBalances.total = ledgerRow?.total_balance ?? 0;
+    }
 
-    const openingBalance = getOpeningBalanceFromLedger(today, currentTotal);
-
+    // 2. Fetch manual deposits/withdrawals from DB
     const snapshot = db.db
       .prepare(
         'SELECT date, opening_balance, closing_balance, total_deposits, total_withdrawals, growth_percentage FROM daily_balance_snapshots WHERE date = ?'
@@ -58,10 +70,11 @@ export async function GET() {
 
     const todaysDeposits = snapshot?.total_deposits ?? 0;
     const todaysWithdrawals = snapshot?.total_withdrawals ?? 0;
+    const openingBalance = getOpeningBalanceFromLedger(today, liveBalances.total);
 
-    // Strict formula: Growth = Current - Opening - Deposits + Withdrawals
+    // 3. STRICT FORMULA: Growth = Live - Opening - Deposits + Withdrawals
     const growthAmt =
-      currentTotal - openingBalance - todaysDeposits + todaysWithdrawals;
+      liveBalances.total - openingBalance - todaysDeposits + todaysWithdrawals;
     const growthPct =
       openingBalance > 0 ? (growthAmt * 100) / openingBalance : 0;
 
@@ -73,7 +86,6 @@ export async function GET() {
 
     const sevenDaysAgo = db.getISTDate(7);
     const thirtyDaysAgo = db.getISTDate(30);
-
     const dailyAvgRoi =
       roiRows.length > 0
         ? roiRows.reduce((s, r) => s + (r.growth_percentage ?? 0), 0) /
@@ -92,11 +104,22 @@ export async function GET() {
           thirtyDayRows.length
         : growthPct;
 
+    // 4. Update ledger with live balance (keep history)
+    try {
+      db.db
+        .prepare(
+          'INSERT OR REPLACE INTO daily_ledger (date, total_balance, created_at) VALUES (?, ?, ?)'
+        )
+        .run(today, liveBalances.total, new Date().toISOString());
+    } catch {
+      // ignore
+    }
+
     return NextResponse.json(
       {
-        current_total_balance: currentTotal,
-        binance_balance: 0,
-        bybit_balance: 0,
+        current_total_balance: liveBalances.total,
+        binance_balance: liveBalances.binance,
+        bybit_balance: liveBalances.bybit,
         opening_balance: openingBalance,
         todays_deposits: todaysDeposits,
         todays_withdrawals: todaysWithdrawals,
@@ -105,16 +128,14 @@ export async function GET() {
         daily_avg_roi: dailyAvgRoi,
         weekly_avg_roi: weeklyAvgRoi,
         thirty_day_avg_roi: thirtyDayAvgRoi,
-        binance_margin: 0,
-        bybit_margin: 0,
-        total_margin: 0,
+        binance_margin: liveBalances.binanceUsedMargin,
+        bybit_margin: liveBalances.bybitUsedMargin,
+        total_margin: liveBalances.binanceUsedMargin + liveBalances.bybitUsedMargin,
       },
-      {
-        headers: { 'Cache-Control': 'no-store, max-age=0' },
-      }
+      { headers: { 'Cache-Control': 'no-store, max-age=0' } }
     );
   } catch (err) {
-    console.error('[API /api/stats] Error:', err);
+    console.error('[Stats API Error]', err);
     const message = err instanceof Error ? err.message : 'Failed to fetch stats';
     return NextResponse.json({ error: message }, { status: 500 });
   }

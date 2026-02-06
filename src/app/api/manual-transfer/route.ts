@@ -1,36 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db/sqlite';
 
-export async function POST(req: NextRequest) {
-  if (req.method !== 'POST') return NextResponse.json(null, { status: 405 });
-
-  let body: unknown;
+export async function POST(request: NextRequest) {
   try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
-  }
+    const body = await request.json();
+    const { date, exchange, type, amount } = body;
+    const numAmount = parseFloat(amount);
 
-  const { date, exchange, type, amount } = body as {
-    date?: string;
-    exchange?: string;
-    type?: string;
-    amount?: string | number;
-  };
+    if (!date || !amount || isNaN(numAmount) || numAmount <= 0) {
+      return NextResponse.json({ error: 'Invalid data' }, { status: 400 });
+    }
 
-  const numAmount = parseFloat(String(amount ?? ''));
+    if (type !== 'DEPOSIT' && type !== 'WITHDRAWAL') {
+      return NextResponse.json(
+        { error: 'type must be DEPOSIT or WITHDRAWAL' },
+        { status: 400 }
+      );
+    }
 
-  if (!date || !amount || isNaN(numAmount) || numAmount <= 0) {
-    return NextResponse.json({ error: 'Invalid data' }, { status: 400 });
-  }
-
-  const validType = type === 'DEPOSIT' || type === 'WITHDRAWAL';
-  if (!validType) {
-    return NextResponse.json({ error: 'type must be DEPOSIT or WITHDRAWAL' }, { status: 400 });
-  }
-
-  try {
-    // 1. Create transfer_history table if not exists
+    // 1. Ensure table exists (migration handles this, but safe fallback)
     db.db.exec(`
       CREATE TABLE IF NOT EXISTS transfer_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,14 +30,14 @@ export async function POST(req: NextRequest) {
       )
     `);
 
-    // 2. Insert record
+    // 2. Record history
     db.db
       .prepare(
         `INSERT INTO transfer_history (date, exchange, type, amount, timestamp) VALUES (?, ?, ?, ?, ?)`
       )
       .run(date, exchange ?? 'UNKNOWN', type, numAmount, Date.now());
 
-    // 3. Ensure snapshot exists for date
+    // 3. Update snapshot (create if missing)
     const existing = db.db
       .prepare('SELECT * FROM daily_balance_snapshots WHERE date = ?')
       .get(date);
@@ -69,7 +57,6 @@ export async function POST(req: NextRequest) {
         .run(date, opening);
     }
 
-    // 4. Update daily snapshot (aggregate)
     if (type === 'DEPOSIT') {
       db.db
         .prepare(
@@ -84,47 +71,11 @@ export async function POST(req: NextRequest) {
         .run(numAmount, date);
     }
 
-    // 5. Recalculate growth_percentage for today (use ledger, no exchange API)
-    const todayStr = db.getISTDate();
-    if (date === todayStr) {
-      const ledgerRow = db.db
-        .prepare('SELECT total_balance FROM daily_ledger ORDER BY date DESC LIMIT 1')
-        .get() as { total_balance: number } | undefined;
-      const currentTotal = ledgerRow?.total_balance ?? 0;
-
-      const snap = db.db
-        .prepare(
-          'SELECT opening_balance, total_deposits, total_withdrawals FROM daily_balance_snapshots WHERE date = ?'
-        )
-        .get(date) as {
-          opening_balance: number;
-          total_deposits: number;
-          total_withdrawals: number;
-        } | undefined;
-
-      if (snap) {
-        const growthAmt =
-          currentTotal -
-          snap.opening_balance -
-          snap.total_deposits +
-          snap.total_withdrawals;
-        const growthPct =
-          snap.opening_balance > 0
-            ? (growthAmt * 100) / snap.opening_balance
-            : 0;
-
-        db.db
-          .prepare(
-            `UPDATE daily_balance_snapshots SET growth_percentage = ? WHERE date = ?`
-          )
-          .run(growthPct, date);
-      }
-    }
-
     return NextResponse.json({ success: true });
-  } catch (err) {
-    console.error('[API /manual-transfer] Error:', err);
-    const message = err instanceof Error ? err.message : 'Failed to record transfer';
+  } catch (error) {
+    console.error('[Manual Transfer Error]', error);
+    const message =
+      error instanceof Error ? error.message : 'Failed to record transfer';
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
