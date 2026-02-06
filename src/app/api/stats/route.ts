@@ -82,8 +82,9 @@ export async function GET() {
     // 3. STRICT FORMULA: Growth = Live - Opening - Deposits + Withdrawals
     const growthAmt =
       liveBalances.total - openingBalance - todaysDeposits + todaysWithdrawals;
+    // Growth % uses Current Balance as denominator (not Opening)
     const growthPct =
-      openingBalance > 0 ? (growthAmt * 100) / openingBalance : 0;
+      liveBalances.total > 0 ? (growthAmt * 100) / liveBalances.total : 0;
 
     const roiRows = db.db
       .prepare(
