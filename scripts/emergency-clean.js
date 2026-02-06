@@ -2,14 +2,10 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-// Try to find the real DB (matches src/lib/db/sqlite.ts: data/trading_bot.db)
+// Use ONLY trading_bot.db (matches src/lib/db/sqlite.ts) — never data.db
 const possiblePaths = [
   path.join(process.cwd(), 'data/trading_bot.db'),
-  path.join(process.cwd(), 'data/data.db'),
   path.join(process.cwd(), '.next/standalone/data/trading_bot.db'),
-  path.join(process.cwd(), '.next/standalone/data/data.db'),
-  path.join(process.cwd(), 'data/trade.db'),
-  path.join(process.cwd(), 'data.db'),
 ];
 
 let dbPath = null;

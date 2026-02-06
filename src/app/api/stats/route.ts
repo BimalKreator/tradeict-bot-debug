@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { ExchangeManager } from '../../../lib/exchanges/manager';
-import { db } from '../../../lib/db/sqlite';
+import { db } from '@/lib/db/sqlite';
 
 export const revalidate = 0;
 
@@ -18,20 +17,6 @@ type SnapshotRow = {
 
 type LedgerRow = { date: string; total_balance: number };
 
-function getTodayPnL(today: string): number {
-  const startOfToday = new Date(`${today}T00:00:00+05:30`);
-  const startOfTomorrow = new Date(startOfToday);
-  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
-  const start = startOfToday.toISOString();
-  const end = startOfTomorrow.toISOString();
-  const row = db.db
-    .prepare(
-      'SELECT COALESCE(SUM(net_pnl), 0) as sum_pnl FROM trade_history WHERE exit_time >= ? AND exit_time < ?'
-    )
-    .get(start, end) as { sum_pnl: number } | undefined;
-  return row?.sum_pnl ?? 0;
-}
-
 function getOpeningBalanceFromLedger(today: string, currentTotal: number): number {
   if (today === HISTORIC_OPENING_DATE) return HISTORIC_OPENING_BALANCE;
 
@@ -41,30 +26,28 @@ function getOpeningBalanceFromLedger(today: string, currentTotal: number): numbe
 
   if (ledger) return ledger.total_balance;
 
-  const todayPnL = getTodayPnL(today);
-  const fallback = currentTotal - todayPnL;
-  try {
-    db.db
-      .prepare(
-        'INSERT OR REPLACE INTO daily_ledger (date, total_balance, created_at) VALUES (?, ?, ?)'
-      )
-      .run(today, fallback, new Date().toISOString());
-  } catch (e) {
-    console.warn('[Stats] Failed to save fallback opening to daily_ledger:', e);
-  }
-  return fallback;
+  // Fallback: use yesterday's closing or last known balance
+  const lastRow = db.db
+    .prepare(
+      'SELECT closing_balance, opening_balance FROM daily_balance_snapshots ORDER BY date DESC LIMIT 1'
+    )
+    .get() as { closing_balance: number | null; opening_balance: number } | undefined;
+  return lastRow?.closing_balance ?? lastRow?.opening_balance ?? currentTotal;
 }
 
 export async function GET() {
   try {
-    // Manual transfer entry only — no auto sync
+    // Manual mode: no exchange API — instant load
     db.ensureTodaySnapshot();
 
-    const manager = new ExchangeManager();
-    const balances = await manager.getAggregatedBalances();
-
     const today = db.getISTDate();
-    const currentTotal = balances.total;
+
+    // Current balance from latest ledger entry (no exchange call)
+    const ledgerRow = db.db
+      .prepare('SELECT total_balance FROM daily_ledger ORDER BY date DESC LIMIT 1')
+      .get() as { total_balance: number } | undefined;
+    const currentTotal = ledgerRow?.total_balance ?? 0;
+
     const openingBalance = getOpeningBalanceFromLedger(today, currentTotal);
 
     const snapshot = db.db
@@ -73,17 +56,10 @@ export async function GET() {
       )
       .get(today) as SnapshotRow | undefined;
 
-    let todaysDeposits = snapshot?.total_deposits ?? 0;
-    let todaysWithdrawals = snapshot?.total_withdrawals ?? 0;
+    const todaysDeposits = snapshot?.total_deposits ?? 0;
+    const todaysWithdrawals = snapshot?.total_withdrawals ?? 0;
 
-    if (snapshot?.total_deposits == null) {
-      console.warn('[Stats] total_deposits is null — treating as 0. Run syncDailyTransfers.');
-      todaysDeposits = 0;
-    }
-    if (snapshot?.total_withdrawals == null) {
-      todaysWithdrawals = 0;
-    }
-
+    // Strict formula: Growth = Current - Opening - Deposits + Withdrawals
     const growthAmt =
       currentTotal - openingBalance - todaysDeposits + todaysWithdrawals;
     const growthPct =
@@ -119,8 +95,8 @@ export async function GET() {
     return NextResponse.json(
       {
         current_total_balance: currentTotal,
-        binance_balance: balances.binance,
-        bybit_balance: balances.bybit,
+        binance_balance: 0,
+        bybit_balance: 0,
         opening_balance: openingBalance,
         todays_deposits: todaysDeposits,
         todays_withdrawals: todaysWithdrawals,
@@ -129,9 +105,9 @@ export async function GET() {
         daily_avg_roi: dailyAvgRoi,
         weekly_avg_roi: weeklyAvgRoi,
         thirty_day_avg_roi: thirtyDayAvgRoi,
-        binance_margin: balances.binanceUsedMargin ?? 0,
-        bybit_margin: balances.bybitUsedMargin ?? 0,
-        total_margin: balances.totalUsedMargin ?? 0,
+        binance_margin: 0,
+        bybit_margin: 0,
+        total_margin: 0,
       },
       {
         headers: { 'Cache-Control': 'no-store, max-age=0' },
@@ -140,10 +116,6 @@ export async function GET() {
   } catch (err) {
     console.error('[API /api/stats] Error:', err);
     const message = err instanceof Error ? err.message : 'Failed to fetch stats';
-    const isInitialFetch = message === 'Initial fetch failed';
-    return NextResponse.json(
-      { error: message },
-      { status: isInitialFetch ? 503 : 500 }
-    );
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

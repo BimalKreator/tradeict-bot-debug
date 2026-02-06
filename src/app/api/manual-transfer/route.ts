@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '../../../../lib/db/sqlite';
-import { ExchangeManager } from '../../../../lib/exchanges/manager';
+import { db } from '@/lib/db/sqlite';
 
 export async function POST(req: NextRequest) {
   if (req.method !== 'POST') return NextResponse.json(null, { status: 405 });
@@ -85,12 +84,13 @@ export async function POST(req: NextRequest) {
         .run(numAmount, date);
     }
 
-    // 5. Recalculate growth_percentage for today (only when date is today and we have live balance)
+    // 5. Recalculate growth_percentage for today (use ledger, no exchange API)
     const todayStr = db.getISTDate();
     if (date === todayStr) {
-      const manager = new ExchangeManager();
-      const balances = await manager.getAggregatedBalances();
-      const currentTotal = balances.total;
+      const ledgerRow = db.db
+        .prepare('SELECT total_balance FROM daily_ledger ORDER BY date DESC LIMIT 1')
+        .get() as { total_balance: number } | undefined;
+      const currentTotal = ledgerRow?.total_balance ?? 0;
 
       const snap = db.db
         .prepare(

@@ -61,9 +61,9 @@ async function run() {
     }
   }
 
+  // Use ONLY trading_bot.db — never data.db
   const possiblePaths = [
     path.join(process.cwd(), 'data/trading_bot.db'),
-    path.join(process.cwd(), 'data/data.db'),
     path.join(process.cwd(), '.next/standalone/data/trading_bot.db'),
   ];
   const dbPath = possiblePaths.find((p) => fs.existsSync(p));

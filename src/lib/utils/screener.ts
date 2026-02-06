@@ -1,5 +1,5 @@
 import type { FundingRate } from 'ccxt';
-import { ExchangeManager } from '../exchanges/manager';
+import { ExchangeManager } from '@/lib/exchanges/manager';
 
 let opportunityCache: FundingSpreadOpportunity[] = [];
 let lastCacheUpdate = 0;
