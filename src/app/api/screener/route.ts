@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getBestOpportunities, refreshScreenerCache, getCacheAge } from '../../../lib/utils/screener';
+import { getBestOpportunities, refreshScreenerCache, getCacheAge } from '@/lib/utils/screener';
 
 export async function GET() {
   try {

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { ExchangeManager } from '../../../lib/exchanges/manager';
+import { ExchangeManager } from '@/lib/exchanges/manager';
 
 export const revalidate = 0;
 

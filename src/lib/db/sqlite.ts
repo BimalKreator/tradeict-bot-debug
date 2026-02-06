@@ -3,7 +3,16 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const DATA_DIR = join(process.cwd(), 'data');
-const DB_PATH = join(DATA_DIR, 'trading_bot.db');
+const possiblePaths = [
+  join(process.cwd(), 'data/trading_bot.db'),
+  join(process.cwd(), 'data/data.db'),
+  join(process.cwd(), '.next/standalone/data/trading_bot.db'),
+  join(process.cwd(), '.next/standalone/data/data.db'),
+];
+const DB_PATH = possiblePaths.find((p) => existsSync(p)) ?? join(DATA_DIR, 'trading_bot.db');
+if (process.env.NODE_ENV !== 'test') {
+  console.log(`[DB] Connecting to: ${DB_PATH}`);
+}
 
 const SCHEMA = `
 -- 1. Active Trades
@@ -132,7 +141,25 @@ class DatabaseClient {
     this.migrateBotSettingsColumns();
     this.migrateDailySnapshotsColumns();
     this.migrateDailyLedger();
+    this.migrateTransferHistory();
     this.ensureTodaySnapshot();
+  }
+
+  private migrateTransferHistory(): void {
+    try {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS transfer_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date TEXT NOT NULL,
+          exchange TEXT NOT NULL,
+          type TEXT NOT NULL,
+          amount REAL NOT NULL,
+          timestamp INTEGER NOT NULL
+        )
+      `);
+    } catch {
+      // ignore
+    }
   }
 
   private migrateDailyLedger(): void {

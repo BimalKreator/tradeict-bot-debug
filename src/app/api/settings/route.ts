@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '../../../lib/db/sqlite';
-import { refreshSettings } from '../../../lib/state/global-state';
+import { db } from '@/lib/db/sqlite';
+import { refreshSettings } from '@/lib/state/global-state';
 
 const ALLOWED_KEYS = [
   'auto_entry_enabled',

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { closeTradeAsUser } from '../../../../lib/exit/controller';
+import { closeTradeAsUser } from '@/lib/exit/controller';
 
 export async function POST(request: Request) {
   try {

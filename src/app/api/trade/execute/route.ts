@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
-import type { DualTradeSides } from '../../../../lib/exchanges/manager';
-import { ExchangeManager } from '../../../../lib/exchanges/manager';
-import { addNotification } from '../../../../lib/db/notifications';
+import type { DualTradeSides } from '@/lib/exchanges/manager';
+import { ExchangeManager } from '@/lib/exchanges/manager';
+import { addNotification } from '@/lib/db/notifications';
 
 function mapDirectionToSides(direction: string): DualTradeSides {
   const normalized = direction.toLowerCase().replace(/[\s/]/g, '');

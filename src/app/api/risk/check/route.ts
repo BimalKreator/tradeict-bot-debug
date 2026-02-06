@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
-import { ExchangeManager } from '../../../../lib/exchanges/manager';
-import { PositionTracker } from '../../../../lib/exchanges/position-tracker';
-import { checkHedgeIntegrity } from '../../../../lib/risk/monitor';
+import { ExchangeManager } from '@/lib/exchanges/manager';
+import { PositionTracker } from '@/lib/exchanges/position-tracker';
+import { checkHedgeIntegrity } from '@/lib/risk/monitor';
 
 export async function GET() {
   try {

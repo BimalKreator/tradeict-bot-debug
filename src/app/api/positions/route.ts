@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { PositionTracker } from '../../../lib/exchanges/position-tracker';
-import { getActiveTradesCached, type ActiveTradeRow } from '../../../lib/cache/positions-cache';
+import { PositionTracker } from '@/lib/exchanges/position-tracker';
+import { getActiveTradesCached, type ActiveTradeRow } from '@/lib/cache/positions-cache';
 
 const TOTAL_SLOTS = 3;
 
