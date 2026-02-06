@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server';
 import { ExchangeManager } from '../../../lib/exchanges/manager';
 import { db } from '../../../lib/db/sqlite';
-import { syncDailyTransfers } from '../../../lib/logic/transfer-sync';
 
 export const revalidate = 0;
-
-let lastSync = 0;
 
 const HISTORIC_OPENING_DATE = '2026-02-03';
 const HISTORIC_OPENING_BALANCE = 95;
@@ -60,13 +57,7 @@ function getOpeningBalanceFromLedger(today: string, currentTotal: number): numbe
 
 export async function GET() {
   try {
-    if (Date.now() - lastSync > 60000) {
-      lastSync = Date.now();
-      syncDailyTransfers().catch((e) =>
-        console.error('[BackgroundSync] Failed:', e)
-      );
-    }
-
+    // Manual transfer entry only — no auto sync
     db.ensureTodaySnapshot();
 
     const manager = new ExchangeManager();

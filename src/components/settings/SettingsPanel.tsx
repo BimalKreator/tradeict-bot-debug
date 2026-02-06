@@ -54,9 +54,21 @@ function useDebouncedSave(ms: number) {
   return save;
 }
 
+function getTodayIST() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+}
+
 export function SettingsPanel() {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [loading, setLoading] = useState(true);
+  const [transferForm, setTransferForm] = useState({
+    date: getTodayIST(),
+    exchange: 'BINANCE' as 'BINANCE' | 'BYBIT',
+    type: 'DEPOSIT' as 'DEPOSIT' | 'WITHDRAWAL',
+    amount: '',
+  });
+  const [transferStatus, setTransferStatus] = useState('');
+
   const saveImmediate = useCallback(async (payload: Partial<Settings>) => {
     try {
       await fetch('/api/settings', {
@@ -97,6 +109,32 @@ export function SettingsPanel() {
     [saveDebounced, saveImmediate]
   );
 
+  const handleTransferSubmit = useCallback(async () => {
+    if (!transferForm.amount || parseFloat(transferForm.amount) <= 0) return;
+    setTransferStatus('Processing...');
+    try {
+      const res = await fetch('/api/manual-transfer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: transferForm.date,
+          exchange: transferForm.exchange,
+          type: transferForm.type,
+          amount: parseFloat(transferForm.amount),
+        }),
+      });
+      if (res.ok) {
+        setTransferStatus('Updated. Refresh Dashboard.');
+        setTransferForm((p) => ({ ...p, amount: '' }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setTransferStatus(data.error ?? 'Error updating.');
+      }
+    } catch {
+      setTransferStatus('Error updating.');
+    }
+  }, [transferForm]);
+
   if (loading) {
     return (
       <div className={panelClass}>
@@ -111,6 +149,86 @@ export function SettingsPanel() {
 
   return (
     <div className="space-y-6">
+      {/* Manual Fund Management */}
+      <section className={panelClass}>
+        <h3 className="mb-4 text-lg font-semibold text-cyan-400">
+          Manual Fund Management
+        </h3>
+        <p className="mb-4 text-sm text-white/70">
+          Manually add deposits/withdrawals to correct Today&apos;s Growth.
+          Formula: Growth = Current − Opening − Deposits + Withdrawals
+        </p>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs text-white/60">Date</label>
+            <input
+              type="date"
+              value={transferForm.date}
+              onChange={(e) =>
+                setTransferForm((p) => ({ ...p, date: e.target.value }))
+              }
+              className="w-full rounded-lg border border-white/20 bg-black/50 px-3 py-2 text-white"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-white/60">Exchange</label>
+            <select
+              value={transferForm.exchange}
+              onChange={(e) =>
+                setTransferForm((p) => ({
+                  ...p,
+                  exchange: e.target.value as 'BINANCE' | 'BYBIT',
+                }))
+              }
+              className="w-full rounded-lg border border-white/20 bg-black/50 px-3 py-2 text-white"
+            >
+              <option value="BINANCE">Binance</option>
+              <option value="BYBIT">Bybit</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-white/60">Type</label>
+            <select
+              value={transferForm.type}
+              onChange={(e) =>
+                setTransferForm((p) => ({
+                  ...p,
+                  type: e.target.value as 'DEPOSIT' | 'WITHDRAWAL',
+                }))
+              }
+              className="w-full rounded-lg border border-white/20 bg-black/50 px-3 py-2 text-white"
+            >
+              <option value="DEPOSIT">Deposit (+)</option>
+              <option value="WITHDRAWAL">Withdrawal (-)</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-white/60">Amount ($)</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              placeholder="0.00"
+              value={transferForm.amount}
+              onChange={(e) =>
+                setTransferForm((p) => ({ ...p, amount: e.target.value }))
+              }
+              className="w-full rounded-lg border border-white/20 bg-black/50 px-3 py-2 text-white"
+            />
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleTransferSubmit}
+          className="mt-4 w-full rounded-lg bg-cyan-600 py-2 px-4 font-semibold text-white transition hover:bg-cyan-500"
+        >
+          Update Balance
+        </button>
+        {transferStatus && (
+          <p className="mt-2 text-center text-sm text-cyan-300">{transferStatus}</p>
+        )}
+      </section>
+
       {/* Section 1: Master Controls */}
       <section className={panelClass}>
         <h3 className="mb-4 text-lg font-semibold text-white">Master Controls</h3>
