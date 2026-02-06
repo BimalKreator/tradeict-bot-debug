@@ -5,7 +5,7 @@ import { syncDailyTransfers } from '../../../lib/logic/transfer-sync';
 
 export const revalidate = 0;
 
-let lastTransferSync = 0;
+let lastSync = 0;
 
 const HISTORIC_OPENING_DATE = '2026-02-03';
 const HISTORIC_OPENING_BALANCE = 95;
@@ -14,9 +14,9 @@ type SnapshotRow = {
   date: string;
   opening_balance: number;
   closing_balance: number | null;
-  total_deposits: number;
-  total_withdrawals: number;
-  growth_percentage: number;
+  total_deposits: number | null;
+  total_withdrawals: number | null;
+  growth_percentage: number | null;
 };
 
 type LedgerRow = { date: string; total_balance: number };
@@ -28,7 +28,9 @@ function getTodayPnL(today: string): number {
   const start = startOfToday.toISOString();
   const end = startOfTomorrow.toISOString();
   const row = db.db
-    .prepare('SELECT COALESCE(SUM(net_pnl), 0) as sum_pnl FROM trade_history WHERE exit_time >= ? AND exit_time < ?')
+    .prepare(
+      'SELECT COALESCE(SUM(net_pnl), 0) as sum_pnl FROM trade_history WHERE exit_time >= ? AND exit_time < ?'
+    )
     .get(start, end) as { sum_pnl: number } | undefined;
   return row?.sum_pnl ?? 0;
 }
@@ -58,12 +60,14 @@ function getOpeningBalanceFromLedger(today: string, currentTotal: number): numbe
 
 export async function GET() {
   try {
-    db.ensureTodaySnapshot();
-
-    if (Date.now() - lastTransferSync > 60000) {
-      syncDailyTransfers().catch(console.error);
-      lastTransferSync = Date.now();
+    if (Date.now() - lastSync > 60000) {
+      lastSync = Date.now();
+      syncDailyTransfers().catch((e) =>
+        console.error('[BackgroundSync] Failed:', e)
+      );
     }
+
+    db.ensureTodaySnapshot();
 
     const manager = new ExchangeManager();
     const balances = await manager.getAggregatedBalances();
@@ -78,12 +82,16 @@ export async function GET() {
       )
       .get(today) as SnapshotRow | undefined;
 
-    const todaysDeposits = snapshot?.total_deposits ?? 0;
-    const todaysWithdrawals = snapshot?.total_withdrawals ?? 0;
+    let todaysDeposits = snapshot?.total_deposits ?? 0;
+    let todaysWithdrawals = snapshot?.total_withdrawals ?? 0;
 
-    const binanceMargin = balances.binanceUsedMargin ?? 0;
-    const bybitMargin = balances.bybitUsedMargin ?? 0;
-    const totalMargin = balances.totalUsedMargin ?? binanceMargin + bybitMargin;
+    if (snapshot?.total_deposits == null) {
+      console.warn('[Stats] total_deposits is null — treating as 0. Run syncDailyTransfers.');
+      todaysDeposits = 0;
+    }
+    if (snapshot?.total_withdrawals == null) {
+      todaysWithdrawals = 0;
+    }
 
     const growthAmt =
       currentTotal - openingBalance - todaysDeposits + todaysWithdrawals;
@@ -101,17 +109,20 @@ export async function GET() {
 
     const dailyAvgRoi =
       roiRows.length > 0
-        ? roiRows.reduce((s, r) => s + (r.growth_percentage ?? 0), 0) / roiRows.length
+        ? roiRows.reduce((s, r) => s + (r.growth_percentage ?? 0), 0) /
+          roiRows.length
         : growthPct;
     const weeklyRows = roiRows.filter((r) => r.date >= sevenDaysAgo);
     const weeklyAvgRoi =
       weeklyRows.length > 0
-        ? weeklyRows.reduce((s, r) => s + (r.growth_percentage ?? 0), 0) / weeklyRows.length
+        ? weeklyRows.reduce((s, r) => s + (r.growth_percentage ?? 0), 0) /
+          weeklyRows.length
         : growthPct;
     const thirtyDayRows = roiRows.filter((r) => r.date >= thirtyDaysAgo);
     const thirtyDayAvgRoi =
       thirtyDayRows.length > 0
-        ? thirtyDayRows.reduce((s, r) => s + (r.growth_percentage ?? 0), 0) / thirtyDayRows.length
+        ? thirtyDayRows.reduce((s, r) => s + (r.growth_percentage ?? 0), 0) /
+          thirtyDayRows.length
         : growthPct;
 
     return NextResponse.json(
@@ -127,9 +138,9 @@ export async function GET() {
         daily_avg_roi: dailyAvgRoi,
         weekly_avg_roi: weeklyAvgRoi,
         thirty_day_avg_roi: thirtyDayAvgRoi,
-        binance_margin: binanceMargin,
-        bybit_margin: bybitMargin,
-        total_margin: totalMargin,
+        binance_margin: balances.binanceUsedMargin ?? 0,
+        bybit_margin: balances.bybitUsedMargin ?? 0,
+        total_margin: balances.totalUsedMargin ?? 0,
       },
       {
         headers: { 'Cache-Control': 'no-store, max-age=0' },
