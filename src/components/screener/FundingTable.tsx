@@ -8,6 +8,18 @@ function normalizeSymbol(s: string): string {
   return s.replace('/USDT:USDT', '').replace('/USDT', '').replace(':USDT', '');
 }
 
+function formatNextFunding(ts: number | undefined): string {
+  if (!ts || ts <= 0) return '—';
+  const now = Date.now();
+  const diff = ts - now;
+  if (diff <= 0) return '—';
+  const mins = Math.floor(diff / 60_000);
+  const hours = Math.floor(mins / 60);
+  if (hours > 0) return `in ${hours}h ${mins % 60}m`;
+  if (mins > 0) return `in ${mins}m`;
+  return 'now';
+}
+
 export default function FundingTable() {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -102,7 +114,9 @@ export default function FundingTable() {
               <th className="p-4 font-medium">Symbol</th>
               <th className="p-4 font-medium text-right">Binance (Rate/Int)</th>
               <th className="p-4 font-medium text-right">Bybit (Rate/Int)</th>
-              <th className="p-4 font-medium text-right">Spread (Net)</th>
+              <th className="p-4 font-medium text-right">Spread (Gross)</th>
+              <th className="p-4 font-medium text-right">Net Spread</th>
+              <th className="p-4 font-medium text-right">Next Funding</th>
               <th className="p-4 font-medium text-right">Strategy</th>
               <th className="p-4 font-medium text-right">Score</th>
               <th className="p-4 font-medium text-right">Action</th>
@@ -111,7 +125,7 @@ export default function FundingTable() {
           <tbody className="divide-y divide-white/5">
             {filteredData.length === 0 ? (
               <tr>
-                <td colSpan={7} className="p-8 text-center text-white/50">
+                <td colSpan={9} className="p-8 text-center text-white/50">
                   {search ? `No results for "${search}"` : 'No opportunities found.'}
                 </td>
               </tr>
@@ -167,6 +181,27 @@ export default function FundingTable() {
 
                     <td className="p-4 text-right font-bold text-cyan-400 font-mono text-lg">
                       +{((row.displaySpread ?? row.spread ?? 0) * 100).toFixed(4)}%
+                    </td>
+
+                    <td
+                      className={`p-4 text-right font-mono font-semibold ${
+                        (row.netSpread ?? 0) > 0
+                          ? 'text-emerald-400'
+                          : (row.netSpread ?? 0) < 0
+                            ? 'text-red-400'
+                            : 'text-white/60'
+                      }`}
+                      title={`Spread − Min (${((row.minSpreadUsed ?? 0) * 100).toFixed(4)}%)`}
+                    >
+                      {((row.netSpread ?? 0) >= 0 ? '+' : '')}
+                      {((row.netSpread ?? 0) * 100).toFixed(4)}%
+                      <div className="text-[10px] text-white/40 font-normal">
+                        Spread − Min
+                      </div>
+                    </td>
+
+                    <td className="p-4 text-right text-xs text-white/70">
+                      {formatNextFunding(row.nextFundingTime)}
                     </td>
 
                     <td className="p-4 text-right">

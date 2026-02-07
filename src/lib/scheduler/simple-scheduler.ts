@@ -4,6 +4,7 @@ import { checkAllExits } from '../exit/controller';
 import { startBackupJob } from './backup';
 import { maybeRunFundingAccumulation } from './funding-job';
 import { refreshScreenerCache } from '../utils/screener';
+import { db } from '../db/sqlite';
 
 export class LocalScheduler {
   private static instance: LocalScheduler | null = null;
@@ -19,7 +20,9 @@ export class LocalScheduler {
   start(): void {
     this.stop();
     startBackupJob();
-    refreshScreenerCache().catch((err) =>
+    const minRow = db.db.prepare('SELECT min_spread_percent FROM bot_settings WHERE id = 1').get() as { min_spread_percent: number } | undefined;
+    const minSpreadDecimal = (minRow?.min_spread_percent ?? 0) / 100;
+    refreshScreenerCache(minSpreadDecimal).catch((err) =>
       console.warn('[Scheduler] Initial screener refresh failed:', err)
     );
     this.intervals.push(
@@ -67,7 +70,9 @@ export class LocalScheduler {
     // Screener cache refresh every 60s (dashboard uses cache for instant load)
     this.intervals.push(
       setInterval(() => {
-        refreshScreenerCache().catch((err) =>
+        const minRow = db.db.prepare('SELECT min_spread_percent FROM bot_settings WHERE id = 1').get() as { min_spread_percent: number } | undefined;
+        const minSpreadDecimal = (minRow?.min_spread_percent ?? 0) / 100;
+        refreshScreenerCache(minSpreadDecimal).catch((err) =>
           console.warn('[Scheduler] refreshScreenerCache failed:', err)
         );
       }, 60_000)

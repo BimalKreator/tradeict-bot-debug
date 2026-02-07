@@ -21,6 +21,9 @@ export interface FundingSpreadOpportunity {
   bybitInterval: string;
   binancePrice: number;
   bybitPrice: number;
+  nextFundingTime: number;
+  netSpread: number;
+  minSpreadUsed: number;
 }
 
 function getHours(rate: FundingRate, exchange: string): number {
@@ -70,7 +73,8 @@ export function getCommonTokens(
 function evaluateOpportunity(
   symbol: string,
   binRate: FundingRate,
-  byRate: FundingRate
+  byRate: FundingRate,
+  minSpreadDecimal: number
 ): FundingSpreadOpportunity | null {
   const binHours = getHours(binRate, 'binance');
   const byHours = getHours(byRate, 'bybit');
@@ -89,6 +93,9 @@ function evaluateOpportunity(
 
   const spread = Math.abs(binFunding - byFunding);
   if (spread <= 0) return null;
+
+  const netSpread = spread - minSpreadDecimal;
+  const nextFundingTime = byTime > 0 ? byTime : binTime;
 
   let longExchange: 'binance' | 'bybit';
   let shortExchange: 'binance' | 'bybit';
@@ -118,13 +125,17 @@ function evaluateOpportunity(
     shortExchange,
     binancePrice: binRate.markPrice ?? 0,
     bybitPrice: byRate.markPrice ?? 0,
+    nextFundingTime,
+    netSpread,
+    minSpreadUsed: minSpreadDecimal,
   };
 }
 
 export function calculateFundingSpreads(
   commonTokens: string[],
   binanceRates: Record<string, FundingRate>,
-  bybitRates: Record<string, FundingRate>
+  bybitRates: Record<string, FundingRate>,
+  minSpreadDecimal: number = 0
 ): FundingSpreadOpportunity[] {
   const opportunities: FundingSpreadOpportunity[] = [];
   for (const symbol of commonTokens) {
@@ -132,7 +143,7 @@ export function calculateFundingSpreads(
     const byRate = bybitRates[symbol];
     if (!binRate || !byRate) continue;
 
-    const opp = evaluateOpportunity(symbol, binRate, byRate);
+    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpreadDecimal);
     if (opp) opportunities.push(opp);
   }
   return opportunities.sort((a, b) => {
@@ -141,17 +152,17 @@ export function calculateFundingSpreads(
     const durB = getDuration(b.primaryInterval);
     // Primary: Lower interval first (1h > 2h > 4h > 8h)
     if (durA !== durB) return durA - durB;
-    // Secondary: Higher spread first
-    return b.spread - a.spread;
+    // Secondary: Higher net spread first
+    return b.netSpread - a.netSpread;
   });
 }
 
-export async function refreshScreenerCache(): Promise<void> {
+export async function refreshScreenerCache(minSpreadDecimal: number = 0): Promise<void> {
   try {
     const manager = new ExchangeManager();
     const { binance, bybit } = await manager.getFundingRates();
     const common = getCommonTokens(binance, bybit);
-    opportunityCache = calculateFundingSpreads(common, binance, bybit);
+    opportunityCache = calculateFundingSpreads(common, binance, bybit, minSpreadDecimal);
     lastCacheUpdate = Date.now();
   } catch (e) {
     console.error('[Screener] Refresh failed:', e);
