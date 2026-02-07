@@ -533,7 +533,8 @@ export class ExchangeManager {
             const ts1 = history[1]?.fundingTime ?? 0;
             if (ts0 > 0 && ts1 > 0) {
               const intervalMs = Math.abs(ts1 - ts0);
-              hours = ExchangeManager.roundIntervalHours(intervalMs / (3600 * 1000));
+              const rawHours = intervalMs / (3600 * 1000);
+              hours = ExchangeManager.roundIntervalHours(Math.round(rawHours));
             }
           }
           if (hours === 0) {
