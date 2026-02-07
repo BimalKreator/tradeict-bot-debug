@@ -86,6 +86,8 @@ export class ExchangeManager {
    * No guessing; 0 means unknown → screener excludes the token.
    */
   private static binanceIntervalCache: Record<string, number> = {};
+  /** Bybit interval in HOURS from rate info (fundingIntervalHour). Populated from rates when available. */
+  private static bybitIntervalCache: Record<string, number> = {};
   /** Last time we ran the full interval scan (for hourly refresh). */
   private static lastIntervalScan = 0;
   /** True once intervals have been loaded at least once. */
@@ -410,17 +412,17 @@ export class ExchangeManager {
   }
 
   /**
-   * Populates binanceIntervalCache from funding rate HISTORY only.
-   * interval = (history[1].fundingTime - history[0].fundingTime) / 3600000 → round to 1, 2, 4, 8.
-   * No guessing; tokens not in cache or with < 2 history entries get 0 (excluded by screener).
+   * Resolves Binance funding interval from HISTORY for the given symbols only.
+   * Interval = (Timestamp[Latest] - Timestamp[Previous]) in ms → hours, rounded to 1, 2, 4, 8.
+   * Skips symbols already in cache unless force=true. Use concurrency limit to avoid rate limits.
    */
-  private async initializeBinanceIntervals(binanceRates: Record<string, FundingRate>): Promise<void> {
-    const symbols = Object.keys(binanceRates);
-    const BATCH = 25;
-    const nextCache: Record<string, number> = {};
+  async resolveBinanceIntervals(symbols: string[], force: boolean = false): Promise<void> {
+    const CONCURRENCY = 25;
+    const toFetch = force ? symbols : symbols.filter((s) => !this.getCachedInterval(s, 'binance'));
+    if (toFetch.length === 0) return;
 
-    for (let i = 0; i < symbols.length; i += BATCH) {
-      const batch = symbols.slice(i, i + BATCH);
+    for (let i = 0; i < toFetch.length; i += CONCURRENCY) {
+      const batch = toFetch.slice(i, i + CONCURRENCY);
       const results = await Promise.all(
         batch.map(async (symbol) => {
           const history = await this.binance.fetchFundingRateHistory(symbol, 2).catch(() => []);
@@ -435,13 +437,41 @@ export class ExchangeManager {
         })
       );
       for (const { symbol, hours } of results) {
-        nextCache[symbol] = hours;
-        const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : symbol;
-        if (base !== symbol) nextCache[base] = hours;
+        ExchangeManager.binanceIntervalCache[symbol] = hours;
+        const full = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
+        const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : symbol.replace(/USDT:?USDT?/i, '') + 'USDT';
+        if (full !== symbol) ExchangeManager.binanceIntervalCache[full] = hours;
+        if (base !== symbol && base !== full) ExchangeManager.binanceIntervalCache[base] = hours;
       }
     }
+  }
 
-    ExchangeManager.binanceIntervalCache = nextCache;
+  /**
+   * Populates Bybit interval cache from rate info (fundingIntervalHour / fundingInterval).
+   * Call before evaluation so getCachedInterval(symbol, 'bybit') returns correct values.
+   */
+  populateBybitIntervalsFromRates(bybitRates: Record<string, FundingRate>): void {
+    for (const [symbol, rate] of Object.entries(bybitRates)) {
+      const hours = ExchangeManager.getHoursFromRate(rate, 'bybit');
+      if (hours > 0) {
+        ExchangeManager.bybitIntervalCache[symbol] = hours;
+        const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : symbol.replace(/USDT:?USDT?/i, '') + 'USDT';
+        if (base !== symbol) ExchangeManager.bybitIntervalCache[base] = hours;
+      }
+    }
+  }
+
+  /**
+   * Returns cached interval HOURS (1, 2, 4, 8) for the symbol on the given exchange.
+   * Binance: history-based cache only (0 if not resolved). Bybit: from rate info cache.
+   * Use for strict matching: if (binHours && byHours && binHours !== byHours) reject.
+   */
+  getCachedInterval(symbol: string, exchange: 'binance' | 'bybit'): number {
+    const full = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
+    const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : symbol.replace(/USDT:?USDT?/i, '') + 'USDT';
+    const cache = exchange === 'binance' ? ExchangeManager.binanceIntervalCache : ExchangeManager.bybitIntervalCache;
+    const v = cache[full] ?? cache[symbol] ?? cache[base];
+    return typeof v === 'number' && v > 0 ? v : 0;
   }
 
   /**
@@ -449,17 +479,12 @@ export class ExchangeManager {
    * Returns 0 if not in cache or unknown. DO NOT fall back to guessing or 8h.
    */
   getBinanceIntervalHours(symbol: string): number {
-    const full = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
-    const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : symbol.replace(/USDT:?USDT?/i, '') + 'USDT';
-    const v = ExchangeManager.binanceIntervalCache[full]
-      ?? ExchangeManager.binanceIntervalCache[symbol]
-      ?? ExchangeManager.binanceIntervalCache[base];
-    return typeof v === 'number' && v > 0 ? v : 0;
+    return this.getCachedInterval(symbol, 'binance');
   }
 
   /**
-   * Refreshes Binance & Bybit funding interval cache at most once per hour.
-   * Populates binanceIntervalCache from funding rate history (strict, no guessing).
+   * Refreshes funding rates cache (intervalCache) at most once per hour.
+   * Does NOT resolve Binance intervals; screener must call resolveBinanceIntervals(commonTokens) before evaluation.
    */
   async refreshIntervalsIfNeeded(): Promise<void> {
     const now = Date.now();
@@ -469,7 +494,7 @@ export class ExchangeManager {
     ) {
       return;
     }
-    console.log('[System] ⏳ Refreshing Binance Intervals (Hourly Scan)...');
+    console.log('[System] ⏳ Refreshing funding rates cache...');
     try {
       const [binanceRates, bybitRates] = await Promise.all([
         withTimeout(this.binance.fetchFundingRates(), EXCHANGE_TIMEOUT_MS, 'Binance fetchFundingRates').catch(() => ({})),
@@ -480,10 +505,9 @@ export class ExchangeManager {
         bybit: bybitRates as Record<string, FundingRate>,
         ts: Date.now(),
       };
-      await this.initializeBinanceIntervals(ExchangeManager.intervalCache.binance);
       ExchangeManager.lastIntervalScan = Date.now();
       ExchangeManager.areIntervalsLoaded = true;
-      console.log('[System] ✅ Intervals Updated.');
+      console.log('[System] ✅ Funding rates cache updated.');
     } catch (err) {
       console.warn('[System] Interval refresh failed, keeping previous cache:', err);
     }

@@ -28,14 +28,6 @@ export interface FundingSpreadOpportunity {
   intervalHours: number;
 }
 
-/** Bybit only: interval hours from rate info. Binance must use history-based cache (getBinanceHours). */
-function getBybitHours(rate: FundingRate): number {
-  const info = (rate.info || {}) as Record<string, unknown>;
-  if (info.fundingIntervalHour != null) return parseFloat(String(info.fundingIntervalHour));
-  if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) / 60;
-  return 0;
-}
-
 function getIntervalLabel(hours: number): string {
   return hours > 0 ? `${hours}h` : '8h';
 }
@@ -59,18 +51,20 @@ export function getCommonTokens(
   return common;
 }
 
+export type GetCachedInterval = (symbol: string, exchange: 'binance' | 'bybit') => number;
+
 function evaluateOpportunity(
   symbol: string,
   binRate: FundingRate,
   byRate: FundingRate,
   minSpreadDecimal: number,
-  getBinanceHours: (sym: string) => number
+  getCachedInterval: GetCachedInterval
 ): FundingSpreadOpportunity | null {
-  const binHours = getBinanceHours(symbol);
-  const byHours = getBybitHours(byRate);
+  const binHours = getCachedInterval(symbol, 'binance');
+  const byHours = getCachedInterval(symbol, 'bybit');
 
-  // STRICT: Binance interval from history cache only. If 0 or mismatch → exclude token.
-  if (binHours === 0 || binHours !== byHours) return null;
+  // STRICT: reject if either interval unknown or if intervals mismatch (e.g. 4h vs 8h).
+  if (!binHours || !byHours || binHours !== byHours) return null;
 
   const binTime = binRate.fundingTimestamp || 0;
   const byTime = byRate.fundingTimestamp || 0;
@@ -127,7 +121,7 @@ export function calculateFundingSpreads(
   binanceRates: Record<string, FundingRate>,
   bybitRates: Record<string, FundingRate>,
   minSpreadDecimal: number,
-  getBinanceHours: (symbol: string) => number
+  getCachedInterval: GetCachedInterval
 ): FundingSpreadOpportunity[] {
   const opportunities: FundingSpreadOpportunity[] = [];
   for (const symbol of commonTokens) {
@@ -135,7 +129,7 @@ export function calculateFundingSpreads(
     const byRate = bybitRates[symbol];
     if (!binRate || !byRate) continue;
 
-    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpreadDecimal, getBinanceHours);
+    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpreadDecimal, getCachedInterval);
     if (opp) opportunities.push(opp);
   }
   return opportunities.sort((a, b) => {
@@ -155,8 +149,11 @@ export async function refreshScreenerCache(minSpreadDecimal: number = 0): Promis
     await manager.refreshIntervalsIfNeeded();
     const { binance, bybit } = await manager.getFundingRates();
     const common = getCommonTokens(binance, bybit);
-    const getBinanceHours = (symbol: string) => manager.getBinanceIntervalHours(symbol);
-    opportunityCache = calculateFundingSpreads(common, binance, bybit, minSpreadDecimal, getBinanceHours);
+    await manager.resolveBinanceIntervals(common);
+    manager.populateBybitIntervalsFromRates(bybit);
+    const getCachedInterval = (symbol: string, exchange: 'binance' | 'bybit') =>
+      manager.getCachedInterval(symbol, exchange);
+    opportunityCache = calculateFundingSpreads(common, binance, bybit, minSpreadDecimal, getCachedInterval);
     lastCacheUpdate = Date.now();
   } catch (e) {
     console.error('[Screener] Refresh failed:', e);
