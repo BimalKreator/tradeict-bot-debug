@@ -38,7 +38,7 @@ async function debugScreener() {
             const latest = binHistory[binHistory.length - 1];
             const prev = binHistory[binHistory.length - 2];
             const diff = latest.timestamp - prev.timestamp;
-            calculatedInterval = diff / (1000 * 60 * 60); // Hours
+            calculatedInterval = Math.round(diff / (1000 * 60 * 60)); // Round to nearest integer // Hours
             console.log(`   - History Timestamps: ${prev.datetime} -> ${latest.datetime}`);
         } else {
             console.log("   - History: Not enough data points.");
