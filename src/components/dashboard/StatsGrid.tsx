@@ -71,7 +71,7 @@ export function StatsGrid() {
         <p className="mt-1 text-sm text-white/50">
           Opening: ${stats?.opening_balance != null ? fmt(stats.opening_balance) : '—'}
         </p>
-        <div className="mt-2 flex justify-between gap-2 border-t border-white/10 pt-2 text-xs text-white/50">
+        <div className="mt-2 flex flex-col space-y-1 border-t border-white/10 pt-2 text-xs text-white/50">
           <span>Deposits: ${stats?.todays_deposits != null ? fmt(stats.todays_deposits) : '0.00'}</span>
           <span>Withdrawals: ${stats?.todays_withdrawals != null ? fmt(stats.todays_withdrawals) : '0.00'}</span>
         </div>
@@ -91,7 +91,7 @@ export function StatsGrid() {
         <p className="mt-0.5 text-xs text-white/50">
           Amt: ${stats?.growth_amt != null ? fmt(stats.growth_amt) : '—'}
         </p>
-        <div className="mt-2 grid grid-cols-3 gap-1 border-t border-white/10 pt-2 text-xs">
+        <div className="mt-2 flex flex-col space-y-1 border-t border-white/10 pt-2 text-xs">
           <div>
             <span className="text-white/50">Daily Avg: </span>
             <span className={avgColor(stats?.daily_avg_roi)}>

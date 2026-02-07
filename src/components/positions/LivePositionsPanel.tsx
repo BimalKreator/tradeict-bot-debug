@@ -61,6 +61,14 @@ function liqBufferPercent(pos: EnrichedPosition): number | null {
   return minPct;
 }
 
+function usedMargin(pos: EnrichedPosition): number {
+  const qty = totalQuantity(pos);
+  if (qty <= 0) return 0;
+  const avgEntry = pos.legs.reduce((s, l) => s + l.entryPrice, 0) / pos.legs.length;
+  const leverage = pos.leverage ?? 2;
+  return (avgEntry * qty) / leverage;
+}
+
 function nextFundingEst(pos: EnrichedPosition): number {
   const notional = pos.legs.reduce(
     (s, l) => s + Math.abs(l.size) * l.markPrice,
@@ -360,6 +368,12 @@ export function LivePositionsPanel({ autoExitEnabled = true }: LivePositionsPane
                   <p className="tabular-nums text-white">${avgMark.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
                 </div>
                 <div>
+                  <span className="text-white/50">Used Margin</span>
+                  <p className="tabular-nums text-white">
+                    ${usedMargin(pos).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </p>
+                </div>
+                <div>
                   <span className="text-white/50">Total Funding</span>
                   <p className={`tabular-nums ${fundingColor}`}>
                     ${(totalFunding).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -436,6 +450,7 @@ export function LivePositionsPanel({ autoExitEnabled = true }: LivePositionsPane
             <tr className="border-b border-white/10 bg-white/5">
               <th className="px-3 py-3 text-left font-medium text-white">Token</th>
               <th className="px-3 py-3 text-right font-medium text-white">Total Qty</th>
+              <th className="px-3 py-3 text-right font-medium text-white">Margin</th>
               <th className="px-3 py-3 text-right font-medium text-white">Funding</th>
               <th className="px-3 py-3 text-right font-medium text-white">Next (Est.)</th>
               <th className="px-3 py-3 text-right font-medium text-white">Unrealized P&L</th>
@@ -463,6 +478,9 @@ export function LivePositionsPanel({ autoExitEnabled = true }: LivePositionsPane
                     <td className="px-3 py-3 font-medium text-white">{pos.symbol}</td>
                     <td className="px-3 py-3 text-right tabular-nums text-white/90">
                       {totalQuantity(pos).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums text-white/90">
+                      ${usedMargin(pos).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td className={`px-3 py-3 text-right tabular-nums ${fundingColor}`}>
                       ${(totalFunding).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -512,13 +530,14 @@ export function LivePositionsPanel({ autoExitEnabled = true }: LivePositionsPane
                   </tr>
                   {isExpanded && (
                     <tr>
-                      <td colSpan={10} className="bg-white/5 p-4">
+                      <td colSpan={11} className="bg-white/5 p-4">
                         <div className="overflow-x-auto rounded-lg border border-white/10">
                           <table className="w-full min-w-[480px] text-xs">
                             <thead>
                               <tr className="border-b border-white/10 bg-white/5">
                                 <th className="px-3 py-2 text-left font-medium text-white/80">Exchange</th>
                                 <th className="px-3 py-2 text-left font-medium text-white/80">Side</th>
+                                <th className="px-3 py-2 text-right font-medium text-white/80">Used Margin</th>
                                 <th className="px-3 py-2 text-right font-medium text-white/80">Quantity</th>
                                 <th className="px-3 py-2 text-right font-medium text-white/80">Entry Price</th>
                                 <th className="px-3 py-2 text-right font-medium text-white/80">Mark Price</th>
@@ -548,6 +567,9 @@ export function LivePositionsPanel({ autoExitEnabled = true }: LivePositionsPane
                                   <tr key={`${pos.symbol}-${leg.exchange}-${i}`} className="border-b border-white/5 last:border-0">
                                     <td className="px-3 py-2 text-white/90">{leg.exchange}</td>
                                     <td className="px-3 py-2 text-white/90">{leg.side}</td>
+                                    <td className="px-3 py-2 text-right tabular-nums text-white/90">
+                                      ${((leg.entryPrice * Math.abs(leg.size)) / (pos.leverage ?? 2)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </td>
                                     <td className="px-3 py-2 text-right tabular-nums text-white/90">
                                       {Math.abs(leg.size).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
                                     </td>

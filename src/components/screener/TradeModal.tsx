@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
 
 function strategyToDirection(strategy: string): string {
@@ -31,6 +31,25 @@ export function TradeModal({
   const [leverage, setLeverage] = useState(2);
   const [executing, setExecuting] = useState(false);
   const [error, setError] = useState('');
+  const [balances, setBalances] = useState<{ binance: number; bybit: number } | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    fetch('/api/balance')
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!cancelled && data && typeof data.binance === 'number' && typeof data.bybit === 'number') {
+          setBalances({ binance: data.binance, bybit: data.bybit });
+        } else {
+          setBalances(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setBalances(null);
+      });
+    return () => { cancelled = true; };
+  }, [isOpen]);
 
   const qty = parseFloat(quantity) || 0;
   const binanceNotional = binancePrice * qty;
@@ -93,6 +112,19 @@ export function TradeModal({
         <h3 className="mb-4 text-lg font-semibold text-white">
           Manual Trade — {displaySymbol}
         </h3>
+
+        {balances && (
+          <div className="mb-3 flex flex-col gap-1 rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-sm">
+            <div className="flex justify-between text-white/90">
+              <span>Binance:</span>
+              <span className="font-mono font-medium text-white">${balances.binance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+            <div className="flex justify-between text-white/90">
+              <span>Bybit:</span>
+              <span className="font-mono font-medium text-white">${balances.bybit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+          </div>
+        )}
 
         <div className="mb-4 rounded-lg bg-white/5 p-3 text-sm">
           <div className="flex justify-between text-white/70">
