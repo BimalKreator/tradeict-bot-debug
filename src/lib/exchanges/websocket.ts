@@ -90,7 +90,9 @@ export class WebSocketManager {
           }
           // After first successful message, ensure Bybit is subscribed to the same symbols (if not yet)
           if (this.bybitWs?.readyState === WebSocket.OPEN && this.bybitSubscribed.size === 0) {
-            const symbols = Array.from(new Set(arr.map((x: { s?: string }) => (x as { s?: string }).s).filter(Boolean))) as string[];
+            // Fix: Cast 'arr' to 'any[]' first to avoid type conflict with 'unknown'
+            const rawData = arr as any[];
+            const symbols = Array.from(new Set(rawData.map((x: any) => x.s).filter((s: any) => typeof s === 'string'))) as string[];
             this.subscribeBybitTickers(symbols.slice(0, 300));
           }
         } catch (e) {
