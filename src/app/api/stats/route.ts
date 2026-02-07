@@ -24,15 +24,18 @@ type LedgerRow = { date: string; total_balance: number };
 type ActiveTradeRow = {
   quantity: number;
   leverage: number | null;
+  long_exchange: string | null;
+  short_exchange: string | null;
   entry_price_binance: number | null;
   entry_price_bybit: number | null;
 };
 
-/** Compute used margin per exchange from active_trades: SUM((qty * entry_price) / leverage). */
+/** Compute used margin per exchange from active_trades. Both long and short legs contribute margin. */
 function getUsedMarginFromActiveTrades(): { binance: number; bybit: number } {
   const rows = db.db
     .prepare(
-      `SELECT quantity, leverage, entry_price_binance, entry_price_bybit
+      `SELECT quantity, leverage, long_exchange, short_exchange,
+              entry_price_binance, entry_price_bybit
        FROM active_trades WHERE status = 'ACTIVE'`
     )
     .all() as ActiveTradeRow[];
@@ -46,14 +49,26 @@ function getUsedMarginFromActiveTrades(): { binance: number; bybit: number } {
     const lev = Number(t.leverage) || levDefault;
     if (qty <= 0 || lev <= 0) continue;
 
-    const binanceEntry = Number(t.entry_price_binance) || 0;
-    const bybitEntry = Number(t.entry_price_bybit) || 0;
+    const longEx = (t.long_exchange ?? '').toLowerCase();
+    const shortEx = (t.short_exchange ?? '').toLowerCase();
 
-    const tradeMarginBinance = (qty * binanceEntry) / lev;
-    const tradeMarginBybit = (qty * bybitEntry) / lev;
+    const longEntryPrice =
+      longEx === 'binance'
+        ? Number(t.entry_price_binance) || 0
+        : Number(t.entry_price_bybit) || 0;
+    const shortEntryPrice =
+      shortEx === 'binance'
+        ? Number(t.entry_price_binance) || 0
+        : Number(t.entry_price_bybit) || 0;
 
-    binanceMargin += tradeMarginBinance;
-    bybitMargin += tradeMarginBybit;
+    const longMargin = (qty * longEntryPrice) / lev;
+    const shortMargin = (qty * shortEntryPrice) / lev;
+
+    if (longEx === 'binance') binanceMargin += longMargin;
+    else if (longEx === 'bybit') bybitMargin += longMargin;
+
+    if (shortEx === 'binance') binanceMargin += shortMargin;
+    else if (shortEx === 'bybit') bybitMargin += shortMargin;
   }
 
   return { binance: binanceMargin, bybit: bybitMargin };

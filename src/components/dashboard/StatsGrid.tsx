@@ -125,7 +125,7 @@ export function StatsGrid() {
         </div>
       </div>
 
-      {/* CARD 3: Exchange Health — Total Bal | Used Margin | Available */}
+      {/* CARD 3: Exchange Health — Total Bal | Margin (from active_trades) | Avail (balance − margin) */}
       <div className="glass rounded-xl p-4">
         <div className="flex items-center gap-2 text-sm text-white/70">
           <Activity className="h-4 w-4" />
@@ -153,47 +153,43 @@ export function StatsGrid() {
               <tr className="border-b border-white/5">
                 <td className="px-2 py-2 text-white/90">Binance</td>
                 <td className="px-2 py-2 text-right tabular-nums text-white/90">
-                  ${stats?.binance_balance != null ? fmtShort(stats.binance_balance) : '—'}
+                  ${(stats?.binance?.balance ?? stats?.binance_balance) != null ? fmtShort(stats?.binance?.balance ?? stats?.binance_balance ?? 0) : '—'}
                 </td>
                 <td className="px-2 py-2 text-right tabular-nums text-white/90">
-                  ${stats?.binance_margin != null ? fmtShort(stats.binance_margin) : '—'}
+                  ${(stats?.binance?.margin ?? stats?.binance_margin) != null ? fmtShort(stats?.binance?.margin ?? stats?.binance_margin ?? 0) : '—'}
                 </td>
                 <td className="px-2 py-2 text-right tabular-nums text-emerald-400/90">
-                  {stats?.binance_available != null
-                    ? `$${fmtShort(stats.binance_available)}`
-                    : stats?.binance_balance != null && stats?.binance_margin != null
-                      ? `$${fmtShort(Math.max(0, stats.binance_balance - stats.binance_margin))}`
-                      : '—'}
+                  {(stats?.binance?.available ?? stats?.binance_available) != null
+                    ? `$${fmtShort(stats?.binance?.available ?? stats?.binance_available ?? 0)}`
+                    : '—'}
                 </td>
               </tr>
               <tr className="border-b border-white/5">
                 <td className="px-2 py-2 text-white/90">Bybit</td>
                 <td className="px-2 py-2 text-right tabular-nums text-white/90">
-                  ${stats?.bybit_balance != null ? fmtShort(stats.bybit_balance) : '—'}
+                  ${(stats?.bybit?.balance ?? stats?.bybit_balance) != null ? fmtShort(stats?.bybit?.balance ?? stats?.bybit_balance ?? 0) : '—'}
                 </td>
                 <td className="px-2 py-2 text-right tabular-nums text-white/90">
-                  ${stats?.bybit_margin != null ? fmtShort(stats.bybit_margin) : '—'}
+                  ${(stats?.bybit?.margin ?? stats?.bybit_margin) != null ? fmtShort(stats?.bybit?.margin ?? stats?.bybit_margin ?? 0) : '—'}
                 </td>
                 <td className="px-2 py-2 text-right tabular-nums text-emerald-400/90">
-                  {stats?.bybit_available != null
-                    ? `$${fmtShort(stats.bybit_available)}`
-                    : stats?.bybit_balance != null && stats?.bybit_margin != null
-                      ? `$${fmtShort(Math.max(0, stats.bybit_balance - stats.bybit_margin))}`
-                      : '—'}
+                  {(stats?.bybit?.available ?? stats?.bybit_available) != null
+                    ? `$${fmtShort(stats?.bybit?.available ?? stats?.bybit_available ?? 0)}`
+                    : '—'}
                 </td>
               </tr>
               <tr className="bg-white/5">
                 <td className="px-2 py-2 font-medium text-white">Total</td>
                 <td className="px-2 py-2 text-right tabular-nums font-medium text-white">
-                  ${stats?.current_total_balance != null ? fmtShort(stats.current_total_balance) : '—'}
+                  ${(stats?.total?.balance ?? stats?.current_total_balance) != null ? fmtShort(stats?.total?.balance ?? stats?.current_total_balance ?? 0) : '—'}
                 </td>
                 <td className="px-2 py-2 text-right tabular-nums font-medium text-white">
-                  ${stats?.total_margin != null ? fmtShort(stats.total_margin) : '—'}
+                  ${(stats?.total?.margin ?? stats?.total_margin) != null ? fmtShort(stats?.total?.margin ?? stats?.total_margin ?? 0) : '—'}
                 </td>
                 <td className="px-2 py-2 text-right tabular-nums font-medium text-emerald-400">
-                  {stats?.current_total_balance != null && stats?.total_margin != null
-                    ? `$${fmtShort(Math.max(0, stats.current_total_balance - stats.total_margin))}`
-                    : (stats?.binance_available != null && stats?.bybit_available != null)
+                  {stats?.total?.available != null
+                    ? `$${fmtShort(stats.total.available)}`
+                    : stats?.binance_available != null && stats?.bybit_available != null
                       ? `$${fmtShort(stats.binance_available + stats.bybit_available)}`
                       : '—'}
                 </td>

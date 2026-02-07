@@ -40,6 +40,32 @@ export class BinanceExchange {
   }
 
   /**
+   * Fetches funding rate history for a symbol (for strict interval calculation).
+   * Returns array of { fundingTime: number } in ascending order (oldest first).
+   * Used to compute interval = (history[1].fundingTime - history[0].fundingTime) / 3600000.
+   */
+  async fetchFundingRateHistory(symbol: string, limit: number = 2): Promise<{ fundingTime: number }[]> {
+    const binanceSymbol = symbol.includes('/')
+      ? symbol.split('/')[0] + 'USDT'
+      : symbol.replace(/USDT:?USDT?/i, '') + 'USDT';
+    try {
+      const res = await (this.exchange as any).fapiPublicGetFundingRate?.({
+        symbol: binanceSymbol,
+        limit: Math.min(limit, 10),
+      });
+      if (!Array.isArray(res)) return [];
+      return res
+        .map((r: { fundingTime?: number }) => ({
+          fundingTime: r?.fundingTime ?? 0,
+        }))
+        .filter((r: { fundingTime: number }) => r.fundingTime > 0)
+        .sort((a: { fundingTime: number }, b: { fundingTime: number }) => a.fundingTime - b.fundingTime);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Sets leverage for a symbol.
    */
   async setLeverage(leverage: number, symbol: string): Promise<void> {

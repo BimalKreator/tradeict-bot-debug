@@ -81,10 +81,31 @@ export class ExchangeManager {
     bybit: Record<string, FundingRate>;
     ts: number;
   } = { binance: {}, bybit: {}, ts: 0 };
+  /**
+   * Binance interval in HOURS from funding history only (history[1].fundingTime - history[0].fundingTime).
+   * No guessing; 0 means unknown → screener excludes the token.
+   */
+  private static binanceIntervalCache: Record<string, number> = {};
   /** Last time we ran the full interval scan (for hourly refresh). */
   private static lastIntervalScan = 0;
   /** True once intervals have been loaded at least once. */
   private static areIntervalsLoaded = false;
+
+  /** Round interval hours to standard 1, 2, 4, 8. */
+  private static roundIntervalHours(h: number): number {
+    if (h <= 0 || !Number.isFinite(h)) return 0;
+    const candidates = [1, 2, 4, 8];
+    let best = 1;
+    let bestDiff = Math.abs(h - 1);
+    for (const c of candidates) {
+      const d = Math.abs(h - c);
+      if (d < bestDiff) {
+        bestDiff = d;
+        best = c;
+      }
+    }
+    return best;
+  }
 
   constructor() {
     this.binance = new BinanceExchange();
@@ -389,8 +410,56 @@ export class ExchangeManager {
   }
 
   /**
+   * Populates binanceIntervalCache from funding rate HISTORY only.
+   * interval = (history[1].fundingTime - history[0].fundingTime) / 3600000 → round to 1, 2, 4, 8.
+   * No guessing; tokens not in cache or with < 2 history entries get 0 (excluded by screener).
+   */
+  private async initializeBinanceIntervals(binanceRates: Record<string, FundingRate>): Promise<void> {
+    const symbols = Object.keys(binanceRates);
+    const BATCH = 25;
+    const nextCache: Record<string, number> = {};
+
+    for (let i = 0; i < symbols.length; i += BATCH) {
+      const batch = symbols.slice(i, i + BATCH);
+      const results = await Promise.all(
+        batch.map(async (symbol) => {
+          const history = await this.binance.fetchFundingRateHistory(symbol, 2).catch(() => []);
+          if (!Array.isArray(history) || history.length < 2) return { symbol, hours: 0 };
+          const ts0 = history[0]?.fundingTime ?? 0;
+          const ts1 = history[1]?.fundingTime ?? 0;
+          if (ts0 <= 0 || ts1 <= 0) return { symbol, hours: 0 };
+          const intervalMs = Math.abs(ts1 - ts0);
+          const hours = intervalMs / (3600 * 1000);
+          const rounded = ExchangeManager.roundIntervalHours(hours);
+          return { symbol, hours: rounded };
+        })
+      );
+      for (const { symbol, hours } of results) {
+        nextCache[symbol] = hours;
+        const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : symbol;
+        if (base !== symbol) nextCache[base] = hours;
+      }
+    }
+
+    ExchangeManager.binanceIntervalCache = nextCache;
+  }
+
+  /**
+   * Returns Binance funding interval HOURS from history-based cache ONLY.
+   * Returns 0 if not in cache or unknown. DO NOT fall back to guessing or 8h.
+   */
+  getBinanceIntervalHours(symbol: string): number {
+    const full = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
+    const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : symbol.replace(/USDT:?USDT?/i, '') + 'USDT';
+    const v = ExchangeManager.binanceIntervalCache[full]
+      ?? ExchangeManager.binanceIntervalCache[symbol]
+      ?? ExchangeManager.binanceIntervalCache[base];
+    return typeof v === 'number' && v > 0 ? v : 0;
+  }
+
+  /**
    * Refreshes Binance & Bybit funding interval cache at most once per hour.
-   * Safe to call frequently; only fetches when > 1 hour has passed or first run.
+   * Populates binanceIntervalCache from funding rate history (strict, no guessing).
    */
   async refreshIntervalsIfNeeded(): Promise<void> {
     const now = Date.now();
@@ -411,6 +480,7 @@ export class ExchangeManager {
         bybit: bybitRates as Record<string, FundingRate>,
         ts: Date.now(),
       };
+      await this.initializeBinanceIntervals(ExchangeManager.intervalCache.binance);
       ExchangeManager.lastIntervalScan = Date.now();
       ExchangeManager.areIntervalsLoaded = true;
       console.log('[System] ✅ Intervals Updated.');

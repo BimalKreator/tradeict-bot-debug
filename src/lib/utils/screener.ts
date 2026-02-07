@@ -24,26 +24,15 @@ export interface FundingSpreadOpportunity {
   nextFundingTime: number;
   netSpread: number;
   minSpreadUsed: number;
+  /** Interval in hours (1, 2, 4, 8) for sorting: 1h/2h = group 1, 4h/8h = group 2. */
+  intervalHours: number;
 }
 
-function getHours(rate: FundingRate, exchange: string): number {
+/** Bybit only: interval hours from rate info. Binance must use history-based cache (getBinanceHours). */
+function getBybitHours(rate: FundingRate): number {
   const info = (rate.info || {}) as Record<string, unknown>;
-
-  if (exchange === 'binance') {
-    if (info.fundingIntervalHours != null) return parseFloat(String(info.fundingIntervalHours));
-    if (rate.interval) {
-      const s = String(rate.interval).toLowerCase();
-      if (s.includes('h')) return parseFloat(s) || 0;
-      if (s.includes('m')) return parseFloat(s) / 60 || 0;
-    }
-    return 0;
-  }
-
-  if (exchange === 'bybit') {
-    if (info.fundingIntervalHour != null) return parseFloat(String(info.fundingIntervalHour));
-    if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) / 60;
-  }
-
+  if (info.fundingIntervalHour != null) return parseFloat(String(info.fundingIntervalHour));
+  if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) / 60;
   return 0;
 }
 
@@ -74,13 +63,14 @@ function evaluateOpportunity(
   symbol: string,
   binRate: FundingRate,
   byRate: FundingRate,
-  minSpreadDecimal: number
+  minSpreadDecimal: number,
+  getBinanceHours: (sym: string) => number
 ): FundingSpreadOpportunity | null {
-  const binHours = getHours(binRate, 'binance');
-  const byHours = getHours(byRate, 'bybit');
+  const binHours = getBinanceHours(symbol);
+  const byHours = getBybitHours(byRate);
 
-  // STRICT: When both intervals are known, they MUST match (e.g. 1h != 8h -> remove)
-  if (binHours > 0 && byHours > 0 && binHours !== byHours) return null;
+  // STRICT: Binance interval from history cache only. If 0 or mismatch → exclude token.
+  if (binHours === 0 || binHours !== byHours) return null;
 
   const binTime = binRate.fundingTimestamp || 0;
   const byTime = byRate.fundingTimestamp || 0;
@@ -108,7 +98,7 @@ function evaluateOpportunity(
     shortExchange = 'bybit';
   }
 
-  const label = getIntervalLabel(byHours > 0 ? byHours : binHours || 8);
+  const label = getIntervalLabel(binHours);
 
   return {
     symbol,
@@ -128,6 +118,7 @@ function evaluateOpportunity(
     nextFundingTime,
     netSpread,
     minSpreadUsed: minSpreadDecimal,
+    intervalHours: binHours,
   };
 }
 
@@ -135,7 +126,8 @@ export function calculateFundingSpreads(
   commonTokens: string[],
   binanceRates: Record<string, FundingRate>,
   bybitRates: Record<string, FundingRate>,
-  minSpreadDecimal: number = 0
+  minSpreadDecimal: number,
+  getBinanceHours: (symbol: string) => number
 ): FundingSpreadOpportunity[] {
   const opportunities: FundingSpreadOpportunity[] = [];
   for (const symbol of commonTokens) {
@@ -143,17 +135,16 @@ export function calculateFundingSpreads(
     const byRate = bybitRates[symbol];
     if (!binRate || !byRate) continue;
 
-    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpreadDecimal);
+    const opp = evaluateOpportunity(symbol, binRate, byRate, minSpreadDecimal, getBinanceHours);
     if (opp) opportunities.push(opp);
   }
   return opportunities.sort((a, b) => {
-    // Parse interval string to hours ('1h' -> 1, '8h' -> 8). Default 8 if unknown.
-    const parseIntervalHours = (str: string) => parseFloat(String(str).replace(/h/gi, '')) || 8;
-    const durA = parseIntervalHours(a.binanceInterval || a.primaryInterval);
-    const durB = parseIntervalHours(b.binanceInterval || b.primaryInterval);
-    // 1. Primary: Interval Ascending (1h first, then 2h, 4h, 8h)
-    if (durA !== durB) return durA - durB;
-    // 2. Secondary: Net Spread Descending (highest profit first)
+    const intA = a.intervalHours ?? 0;
+    const intB = b.intervalHours ?? 0;
+    const isGroup1A = intA >= 1 && intA <= 2;
+    const isGroup1B = intB >= 1 && intB <= 2;
+    if (isGroup1A && !isGroup1B) return -1;
+    if (!isGroup1A && isGroup1B) return 1;
     return (b.netSpread ?? 0) - (a.netSpread ?? 0);
   });
 }
@@ -164,7 +155,8 @@ export async function refreshScreenerCache(minSpreadDecimal: number = 0): Promis
     await manager.refreshIntervalsIfNeeded();
     const { binance, bybit } = await manager.getFundingRates();
     const common = getCommonTokens(binance, bybit);
-    opportunityCache = calculateFundingSpreads(common, binance, bybit, minSpreadDecimal);
+    const getBinanceHours = (symbol: string) => manager.getBinanceIntervalHours(symbol);
+    opportunityCache = calculateFundingSpreads(common, binance, bybit, minSpreadDecimal, getBinanceHours);
     lastCacheUpdate = Date.now();
   } catch (e) {
     console.error('[Screener] Refresh failed:', e);
