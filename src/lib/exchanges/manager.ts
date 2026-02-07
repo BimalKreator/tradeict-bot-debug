@@ -628,6 +628,14 @@ export class ExchangeManager {
   }
 
   /**
+   * Fetches Binance funding rate history for a symbol (for IntervalManager chunked scanning).
+   * Returns array of { fundingTime } in ascending order.
+   */
+  async fetchBinanceFundingRateHistory(symbol: string, limit: number = 2): Promise<{ fundingTime: number }[]> {
+    return this.binance.fetchFundingRateHistory(symbol, limit);
+  }
+
+  /**
    * Refreshes funding rates cache (intervalCache) at most once per hour.
    * Does NOT resolve Binance intervals; screener must call resolveBinanceIntervals(commonTokens) before evaluation.
    */

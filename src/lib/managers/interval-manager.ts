@@ -1,0 +1,107 @@
+import { ExchangeManager } from '@/lib/exchanges/manager';
+
+const DELAY_BETWEEN_FETCHES_MS = 100;
+const STANDARD_INTERVALS = [1, 2, 4, 8] as const;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Round hours to nearest standard interval (1, 2, 4, 8). */
+function roundIntervalHours(h: number): number {
+  if (h <= 0 || !Number.isFinite(h)) return 8;
+  let best = 8;
+  let bestDiff = Math.abs(h - 8);
+  for (const c of STANDARD_INTERVALS) {
+    const d = Math.abs(h - c);
+    if (d < bestDiff) {
+      bestDiff = d;
+      best = c;
+    }
+  }
+  return best;
+}
+
+/**
+ * Smart Interval Discovery: chunked scanning of Binance funding rate history
+ * to get TRUE intervals (1h, 2h, 4h, 8h) without triggering API rate limits.
+ * Screener reads from cache only (lightning fast); batches run in background every 15 min.
+ */
+export class IntervalManager {
+  private static instance: IntervalManager | null = null;
+  private intervalCache: Record<string, number> = {};
+
+  static getInstance(): IntervalManager {
+    if (IntervalManager.instance === null) {
+      IntervalManager.instance = new IntervalManager();
+    }
+    return IntervalManager.instance;
+  }
+
+  /**
+   * Run one batch of the chunked scan (25% of symbols when totalBatches=4).
+   * Fetches funding rate history for each symbol in the chunk and computes interval from time diff.
+   */
+  async runBatchScan(manager: ExchangeManager, batchIndex: number, totalBatches: number): Promise<void> {
+    const { binance } = await manager.getRates();
+    const allSymbols = Object.keys(binance)
+      .filter((s) => s.includes('USDT'))
+      .sort();
+    if (allSymbols.length === 0) {
+      console.log('[IntervalManager] No symbols from getRates(), skipping batch');
+      return;
+    }
+    const chunkSize = Math.ceil(allSymbols.length / totalBatches);
+    const start = batchIndex * chunkSize;
+    const chunk = allSymbols.slice(start, start + chunkSize);
+    if (chunk.length === 0) return;
+
+    console.log(
+      `[IntervalManager] Batch ${batchIndex + 1}/${totalBatches}: scanning ${chunk.length} symbols (${start}-${start + chunk.length - 1})`
+    );
+
+    for (const symbol of chunk) {
+      try {
+        const history = await manager.fetchBinanceFundingRateHistory(symbol, 2);
+        if (Array.isArray(history) && history.length >= 2) {
+          const t0 = history[0]?.fundingTime ?? 0;
+          const t1 = history[1]?.fundingTime ?? 0;
+          if (t0 > 0 && t1 > 0) {
+            const diffMs = Math.abs(t1 - t0);
+            const rawHours = diffMs / 3600000;
+            const hours = roundIntervalHours(Math.round(rawHours));
+            this.setCached(symbol, hours);
+          } else {
+            this.setCached(symbol, 8);
+          }
+        } else {
+          this.setCached(symbol, 8);
+        }
+      } catch {
+        this.setCached(symbol, 8);
+      }
+      await delay(DELAY_BETWEEN_FETCHES_MS);
+    }
+
+    const sample = chunk.slice(0, 3).map((s) => [s, this.intervalCache[s] ?? 8]);
+    console.log('[IntervalManager] Batch done. Sample:', sample);
+  }
+
+  private setCached(symbol: string, hours: number): void {
+    this.intervalCache[symbol] = hours;
+    const full = symbol.includes('/') ? symbol : (symbol.replace(/USDT$/i, '') || symbol) + '/USDT:USDT';
+    const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : (symbol.replace(/USDT:?USDT?/i, '') || symbol) + 'USDT';
+    if (full !== symbol) this.intervalCache[full] = hours;
+    if (base !== symbol && base !== full) this.intervalCache[base] = hours;
+  }
+
+  /**
+   * Returns cached interval in hours (1, 2, 4, 8). Defaults to 8 if not yet scanned.
+   */
+  getInterval(symbol: string): number {
+    const full = symbol.includes('/') ? symbol : (symbol.replace(/USDT$/i, '') || symbol) + '/USDT:USDT';
+    const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : (symbol.replace(/USDT:?USDT?/i, '') || symbol) + 'USDT';
+    const v = this.intervalCache[symbol] ?? this.intervalCache[full] ?? this.intervalCache[base];
+    return typeof v === 'number' && v > 0 ? v : 8;
+  }
+}

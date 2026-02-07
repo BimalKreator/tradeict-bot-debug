@@ -1,5 +1,6 @@
 import type { FundingRate } from 'ccxt';
 import { ExchangeManager } from '@/lib/exchanges/manager';
+import { IntervalManager } from '@/lib/managers/interval-manager';
 
 let opportunityCache: FundingSpreadOpportunity[] = [];
 let lastCacheUpdate = 0;
@@ -200,10 +201,11 @@ export async function refreshScreenerCache(minSpreadDecimal: number = 0): Promis
       console.warn('[Screener] Rates Cache is EMPTY!');
     }
     const common = getCommonTokens(binance, bybit);
-    await manager.resolveBinanceIntervals(common);
     manager.populateBybitIntervalsFromRates(bybit);
+    // Binance interval from IntervalManager (chunked history scan); Bybit from rate metadata
+    const intervalManager = IntervalManager.getInstance();
     const getCachedInterval = (symbol: string, exchange: 'binance' | 'bybit') =>
-      manager.getCachedInterval(symbol, exchange);
+      exchange === 'binance' ? intervalManager.getInterval(symbol) : manager.getCachedInterval(symbol, 'bybit');
     opportunityCache = calculateFundingSpreads(common, binance, bybit, minSpreadDecimal, getCachedInterval);
     lastCacheUpdate = Date.now();
   } catch (e) {

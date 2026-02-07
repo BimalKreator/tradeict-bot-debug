@@ -5,6 +5,8 @@ import { startBackupJob } from './backup';
 import { maybeRunFundingAccumulation } from './funding-job';
 import { refreshScreenerCache } from '../utils/screener';
 import { db } from '../db/sqlite';
+import { IntervalManager } from '../managers/interval-manager';
+import { ExchangeManager } from '../exchanges/manager';
 
 export class LocalScheduler {
   private static instance: LocalScheduler | null = null;
@@ -76,6 +78,19 @@ export class LocalScheduler {
           console.warn('[Scheduler] refreshScreenerCache failed:', err)
         );
       }, 60_000)
+    );
+    // Chunked interval discovery: every 15 min run one batch (0–25%, 25–50%, 50–75%, 75–100%)
+    const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+    this.intervals.push(
+      setInterval(() => {
+        const minutes = new Date().getMinutes();
+        const batchIndex = Math.floor(minutes / 15);
+        const totalBatches = 4;
+        const manager = new ExchangeManager();
+        IntervalManager.getInstance()
+          .runBatchScan(manager, batchIndex, totalBatches)
+          .catch((err) => console.warn('[Scheduler] IntervalManager runBatchScan failed:', err));
+      }, FIFTEEN_MIN_MS)
     );
   }
 
