@@ -28,21 +28,17 @@ function getHours(rate: FundingRate, exchange: string): number {
 
   if (exchange === 'binance') {
     if (info.fundingIntervalHours != null) return parseFloat(String(info.fundingIntervalHours));
-    if (rate.interval && String(rate.interval).includes('8')) return 8;
-    return 8;
+    if (rate.interval) {
+      const s = String(rate.interval).toLowerCase();
+      if (s.includes('h')) return parseFloat(s) || 0;
+      if (s.includes('m')) return parseFloat(s) / 60 || 0;
+    }
+    return 0;
   }
 
   if (exchange === 'bybit') {
     if (info.fundingIntervalHour != null) return parseFloat(String(info.fundingIntervalHour));
     if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) / 60;
-  }
-
-  if (rate.interval) {
-    const s = String(rate.interval).toLowerCase();
-    if (s.includes('h')) return parseFloat(s);
-    if (s.includes('m')) return parseFloat(s) / 60;
-    const n = parseInt(s, 10);
-    if (!isNaN(n) && n >= 60) return n / 60;
   }
 
   return 0;
@@ -79,8 +75,8 @@ function evaluateOpportunity(
   const binHours = getHours(binRate, 'binance');
   const byHours = getHours(byRate, 'bybit');
 
-  // STRICT: Same interval required — never show mismatched (e.g. 8h vs 1h)
-  if (binHours !== byHours) return null;
+  // STRICT: When both intervals are known, they MUST match (e.g. 1h != 8h -> remove)
+  if (binHours > 0 && byHours > 0 && binHours !== byHours) return null;
 
   const binTime = binRate.fundingTimestamp || 0;
   const byTime = byRate.fundingTimestamp || 0;
