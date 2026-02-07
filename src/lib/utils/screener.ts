@@ -147,19 +147,21 @@ export function calculateFundingSpreads(
     if (opp) opportunities.push(opp);
   }
   return opportunities.sort((a, b) => {
-    const getDuration = (str: string) => parseFloat(String(str).replace('h', '')) || 999;
-    const durA = getDuration(a.primaryInterval);
-    const durB = getDuration(b.primaryInterval);
-    // Primary: Lower interval first (1h > 2h > 4h > 8h)
+    // Parse interval string to hours ('1h' -> 1, '8h' -> 8). Default 8 if unknown.
+    const parseIntervalHours = (str: string) => parseFloat(String(str).replace(/h/gi, '')) || 8;
+    const durA = parseIntervalHours(a.binanceInterval || a.primaryInterval);
+    const durB = parseIntervalHours(b.binanceInterval || b.primaryInterval);
+    // 1. Primary: Interval Ascending (1h first, then 2h, 4h, 8h)
     if (durA !== durB) return durA - durB;
-    // Secondary: Higher net spread first
-    return b.netSpread - a.netSpread;
+    // 2. Secondary: Net Spread Descending (highest profit first)
+    return (b.netSpread ?? 0) - (a.netSpread ?? 0);
   });
 }
 
 export async function refreshScreenerCache(minSpreadDecimal: number = 0): Promise<void> {
   try {
     const manager = new ExchangeManager();
+    await manager.refreshIntervalsIfNeeded();
     const { binance, bybit } = await manager.getFundingRates();
     const common = getCommonTokens(binance, bybit);
     opportunityCache = calculateFundingSpreads(common, binance, bybit, minSpreadDecimal);

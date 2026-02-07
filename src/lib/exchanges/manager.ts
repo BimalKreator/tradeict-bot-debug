@@ -43,6 +43,8 @@ const EXCHANGE_TIMEOUT_MS = 30_000;
 const POSITIONS_CACHE_TTL_MS = 1000;
 /** Funding intervals cache TTL to avoid API spam. */
 const INTERVAL_CACHE_TTL_MS = 60_000;
+/** Refresh Binance/Bybit funding intervals at most once per hour (new tokens, interval changes). */
+const INTERVAL_REFRESH_RATE_MS = 60 * 60 * 1000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -76,6 +78,10 @@ export class ExchangeManager {
     bybit: Record<string, FundingRate>;
     ts: number;
   } = { binance: {}, bybit: {}, ts: 0 };
+  /** Last time we ran the full interval scan (for hourly refresh). */
+  private static lastIntervalScan = 0;
+  /** True once intervals have been loaded at least once. */
+  private static areIntervalsLoaded = false;
 
   constructor() {
     this.binance = new BinanceExchange();
@@ -367,6 +373,37 @@ export class ExchangeManager {
       if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) / 60;
     }
     return 0;
+  }
+
+  /**
+   * Refreshes Binance & Bybit funding interval cache at most once per hour.
+   * Safe to call frequently; only fetches when > 1 hour has passed or first run.
+   */
+  async refreshIntervalsIfNeeded(): Promise<void> {
+    const now = Date.now();
+    if (
+      now - ExchangeManager.lastIntervalScan < INTERVAL_REFRESH_RATE_MS &&
+      ExchangeManager.areIntervalsLoaded
+    ) {
+      return;
+    }
+    console.log('[System] ⏳ Refreshing Binance Intervals (Hourly Scan)...');
+    try {
+      const [binanceRates, bybitRates] = await Promise.all([
+        withTimeout(this.binance.fetchFundingRates(), EXCHANGE_TIMEOUT_MS, 'Binance fetchFundingRates').catch(() => ({})),
+        withTimeout(this.bybit.fetchFundingRates(), EXCHANGE_TIMEOUT_MS, 'Bybit fetchFundingRates').catch(() => ({})),
+      ]);
+      ExchangeManager.intervalCache = {
+        binance: binanceRates as Record<string, FundingRate>,
+        bybit: bybitRates as Record<string, FundingRate>,
+        ts: Date.now(),
+      };
+      ExchangeManager.lastIntervalScan = Date.now();
+      ExchangeManager.areIntervalsLoaded = true;
+      console.log('[System] ✅ Intervals Updated.');
+    } catch (err) {
+      console.warn('[System] Interval refresh failed, keeping previous cache:', err);
+    }
   }
 
   /**
