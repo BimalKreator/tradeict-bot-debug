@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { TradeModal } from './TradeModal';
 
 function normalizeSymbol(s: string): string {
   return s.replace('/USDT:USDT', '').replace('/USDT', '').replace(':USDT', '');
@@ -12,6 +13,13 @@ export default function FundingTable() {
   const [loading, setLoading] = useState(true);
   const [nextSymbol, setNextSymbol] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [manualTradingEnabled, setManualTradingEnabled] = useState(true);
+  const [tradeModalRow, setTradeModalRow] = useState<{
+    symbol: string;
+    strategy: string;
+    binancePrice: number;
+    bybitPrice: number;
+  } | null>(null);
 
   const fetchData = () => {
     fetch('/api/screener')
@@ -42,6 +50,13 @@ export default function FundingTable() {
     checkNext();
     const interval = setInterval(checkNext, 3000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then((s) => setManualTradingEnabled((s?.manual_trading_enabled ?? 1) === 1))
+      .catch(() => setManualTradingEnabled(false));
   }, []);
 
   const filteredData = data.filter((item) =>
@@ -90,12 +105,13 @@ export default function FundingTable() {
               <th className="p-4 font-medium text-right">Spread (Net)</th>
               <th className="p-4 font-medium text-right">Strategy</th>
               <th className="p-4 font-medium text-right">Score</th>
+              <th className="p-4 font-medium text-right">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
             {filteredData.length === 0 ? (
               <tr>
-                <td colSpan={6} className="p-8 text-center text-white/50">
+                <td colSpan={7} className="p-8 text-center text-white/50">
                   {search ? `No results for "${search}"` : 'No opportunities found.'}
                 </td>
               </tr>
@@ -162,6 +178,33 @@ export default function FundingTable() {
                     <td className="p-4 text-right text-white/40 font-mono text-xs">
                       {Math.round(row.score ?? 0)}
                     </td>
+                    <td className="p-4 text-right">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          manualTradingEnabled &&
+                          setTradeModalRow({
+                            symbol: row.symbol,
+                            strategy: row.strategy ?? 'Long Bin / Short Byb',
+                            binancePrice: row.binancePrice ?? 0,
+                            bybitPrice: row.bybitPrice ?? 0,
+                          })
+                        }
+                        disabled={!manualTradingEnabled}
+                        title={
+                          manualTradingEnabled
+                            ? 'Open trade'
+                            : 'Enable Manual Trading in Settings'
+                        }
+                        className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                          manualTradingEnabled
+                            ? 'bg-cyan-600 text-white hover:bg-cyan-500'
+                            : 'cursor-not-allowed bg-white/10 text-white/40'
+                        }`}
+                      >
+                        Trade
+                      </button>
+                    </td>
                   </tr>
                 );
               })
@@ -169,6 +212,17 @@ export default function FundingTable() {
           </tbody>
         </table>
       </div>
+
+      {tradeModalRow && (
+        <TradeModal
+          isOpen={!!tradeModalRow}
+          onClose={() => setTradeModalRow(null)}
+          symbol={tradeModalRow.symbol}
+          strategy={tradeModalRow.strategy}
+          binancePrice={tradeModalRow.binancePrice}
+          bybitPrice={tradeModalRow.bybitPrice}
+        />
+      )}
     </div>
   );
 }

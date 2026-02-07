@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { DualTradeSides } from '@/lib/exchanges/manager';
 import { ExchangeManager } from '@/lib/exchanges/manager';
 import { addNotification } from '@/lib/db/notifications';
+import { db } from '@/lib/db/sqlite';
 
 function mapDirectionToSides(direction: string): DualTradeSides {
   const normalized = direction.toLowerCase().replace(/[\s/]/g, '');
@@ -17,13 +18,23 @@ function mapDirectionToSides(direction: string): DualTradeSides {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { symbol, quantity, leverage, direction } = body;
+    const { symbol, quantity, leverage, direction, isManual } = body;
 
     if (!symbol || quantity == null || leverage == null || !direction) {
       return NextResponse.json(
         { error: 'Missing required fields: symbol, quantity, leverage, direction' },
         { status: 400 }
       );
+    }
+
+    if (isManual) {
+      const row = db.db.prepare('SELECT manual_trading_enabled FROM bot_settings WHERE id = 1').get() as { manual_trading_enabled: number } | undefined;
+      if (!row || row.manual_trading_enabled !== 1) {
+        return NextResponse.json(
+          { error: 'Manual trading is disabled. Enable it in Settings.' },
+          { status: 403 }
+        );
+      }
     }
 
     const qty = Number(quantity);
