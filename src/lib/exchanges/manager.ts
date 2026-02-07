@@ -349,6 +349,61 @@ export class ExchangeManager {
     return s || '8h';
   }
 
+  /** Robust interval detection (same as screener). Returns 0 when unknown — no default to 8h. */
+  private static getHoursFromRate(rate: FundingRate | undefined, exchange: string): number {
+    if (!rate) return 0;
+    const info = ((rate as unknown as { info?: Record<string, unknown> }).info || {}) as Record<string, unknown>;
+    if (exchange === 'binance') {
+      if (info.fundingIntervalHours != null) return parseFloat(String(info.fundingIntervalHours));
+      if (rate.interval) {
+        const s = String(rate.interval).toLowerCase();
+        if (s.includes('h')) return parseFloat(s) || 0;
+        if (s.includes('m')) return parseFloat(s) / 60 || 0;
+      }
+      return 0;
+    }
+    if (exchange === 'bybit') {
+      if (info.fundingIntervalHour != null) return parseFloat(String(info.fundingIntervalHour));
+      if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) / 60;
+    }
+    return 0;
+  }
+
+  /**
+   * Returns current funding interval HOURS (1, 2, 4, 8) or 0 when unknown.
+   * Used by exit controller to avoid false interval-change exits.
+   */
+  async getFundingIntervalHours(symbol: string): Promise<{ binance: number; bybit: number }> {
+    const fullSymbol = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
+    const now = Date.now();
+    const cache = ExchangeManager.intervalCache;
+    const cacheValid = now - cache.ts < INTERVAL_CACHE_TTL_MS;
+
+    if (!cacheValid) {
+      try {
+        const [binanceRates, bybitRates] = await Promise.all([
+          withTimeout(this.binance.fetchFundingRates(), EXCHANGE_TIMEOUT_MS, 'Binance fetchFundingRates').catch(() => ({})),
+          withTimeout(this.bybit.fetchFundingRates(), EXCHANGE_TIMEOUT_MS, 'Bybit fetchFundingRates').catch(() => ({})),
+        ]);
+        ExchangeManager.intervalCache = {
+          binance: binanceRates as Record<string, FundingRate>,
+          bybit: bybitRates as Record<string, FundingRate>,
+          ts: Date.now(),
+        };
+      } catch {
+        /* keep previous cache */
+      }
+    }
+
+    const binanceRate = ExchangeManager.intervalCache.binance[fullSymbol] ?? ExchangeManager.intervalCache.binance[symbol];
+    const bybitRate = ExchangeManager.intervalCache.bybit[fullSymbol] ?? ExchangeManager.intervalCache.bybit[symbol];
+
+    return {
+      binance: ExchangeManager.getHoursFromRate(binanceRate, 'binance'),
+      bybit: ExchangeManager.getHoursFromRate(bybitRate, 'bybit'),
+    };
+  }
+
   /**
    * Returns current funding intervals for a symbol on both exchanges.
    * Uses 60s in-memory cache. On API failure, does not assume change (returns cached or '8h').

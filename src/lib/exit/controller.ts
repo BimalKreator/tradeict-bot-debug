@@ -212,24 +212,44 @@ async function executeExit(
   }
 }
 
+/** Parse interval string to hours (e.g. "4h" -> 4). */
+function parseIntervalToHours(s: string | null | undefined): number {
+  const v = (s ?? '').toLowerCase().trim();
+  if (v === '1h' || v === '1') return 1;
+  if (v === '2h' || v === '2') return 2;
+  if (v === '4h' || v === '4') return 4;
+  if (v === '8h' || v === '8') return 8;
+  const n = parseFloat(v.replace('h', ''));
+  return !isNaN(n) && n > 0 ? n : 0;
+}
+
 /**
- * Exit if funding interval changed on any exchange. Uses live data; on API failure does not exit.
+ * Exit only if we are 100% sure the interval has changed (e.g. known 8h -> known 1h).
+ * If Binance or Bybit returns 0 (Unknown), DO NOT exit — prevents panic-selling valid 1h/4h trades.
  */
 async function checkIntervalChange(trade: TradeRow, manager: ExchangeManager): Promise<boolean> {
-  const tradeInterval = normalizeInterval(trade.interval ?? undefined);
-  let live: { binance: string; bybit: string };
+  const tradeHours = parseIntervalToHours(trade.interval ?? undefined);
+  if (tradeHours <= 0) return false;
+
+  let live: { binance: number; bybit: number };
   try {
-    live = await manager.getFundingIntervals(trade.symbol);
+    live = await manager.getFundingIntervalHours(trade.symbol);
   } catch (err) {
-    console.warn('[ExitController] getFundingIntervals failed, skipping interval check:', err);
+    console.warn('[ExitController] getFundingIntervalHours failed, skipping interval check:', err);
     return false;
   }
-  const liveBin = normalizeInterval(live.binance);
-  const liveByb = normalizeInterval(live.bybit);
-  if (liveBin === tradeInterval && liveByb === tradeInterval) return false;
 
+  if (live.binance === 0 || live.bybit === 0) {
+    return false;
+  }
+
+  if (live.binance === tradeHours && live.bybit === tradeHours) return false;
+
+  const tradeLabel = `${tradeHours}h`;
+  const binLabel = live.binance > 0 ? `${live.binance}h` : 'Unknown';
+  const bybLabel = live.bybit > 0 ? `${live.bybit}h` : 'Unknown';
   console.warn(
-    `🚨 Interval Mismatch Detected for ${trade.symbol}! DB: ${tradeInterval}, Live: Binance=${liveBin} Bybit=${liveByb}. Exiting...`
+    `[Exit] Interval Mismatch: Trade=${tradeLabel} vs Binance=${binLabel} Bybit=${bybLabel}. Exiting ${trade.symbol}...`
   );
   try {
     const result = await manager.closeAllPositions(trade.symbol);
