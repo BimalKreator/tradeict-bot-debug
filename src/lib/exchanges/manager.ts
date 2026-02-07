@@ -22,6 +22,9 @@ export interface AggregatedBalances {
   binanceUsedMargin: number;
   bybitUsedMargin: number;
   totalUsedMargin: number;
+  /** Available (free) balance per exchange: total balance minus used margin. */
+  binanceAvailable: number;
+  bybitAvailable: number;
 }
 
 export interface ExchangePositionsResult {
@@ -254,8 +257,18 @@ export class ExchangeManager {
       binanceUsedMargin,
       bybitUsedMargin,
       totalUsedMargin: binanceUsedMargin + bybitUsedMargin,
+      binanceAvailable: Math.max(0, binanceBalance - binanceUsedMargin),
+      bybitAvailable: Math.max(0, bybitBalance - bybitUsedMargin),
       dataComplete,
     };
+  }
+
+  /**
+   * Returns last known per-exchange balances from cache (populated by any successful getAggregatedBalances call).
+   * Use as fallback when live API times out so the UI does not show $0.00.
+   */
+  static getLastKnownBalances(): { binance: number; bybit: number } {
+    return { ...ExchangeManager.lastValidBalances };
   }
 
   /**

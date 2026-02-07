@@ -46,7 +46,23 @@ export async function GET() {
 
     // 1. Fetch LIVE balances from Binance/Bybit (max 10s so UI never hangs)
     const UI_BALANCE_TIMEOUT_MS = 10_000;
-    let liveBalances = { total: 0, binance: 0, bybit: 0, binanceUsedMargin: 0, bybitUsedMargin: 0 };
+    let liveBalances: {
+      total: number;
+      binance: number;
+      bybit: number;
+      binanceUsedMargin: number;
+      bybitUsedMargin: number;
+      binanceAvailable: number;
+      bybitAvailable: number;
+    } = {
+      total: 0,
+      binance: 0,
+      bybit: 0,
+      binanceUsedMargin: 0,
+      bybitUsedMargin: 0,
+      binanceAvailable: 0,
+      bybitAvailable: 0,
+    };
     try {
       const manager = new ExchangeManager();
       const agg = await Promise.race([
@@ -61,13 +77,43 @@ export async function GET() {
         bybit: agg.bybit,
         binanceUsedMargin: agg.binanceUsedMargin ?? 0,
         bybitUsedMargin: agg.bybitUsedMargin ?? 0,
+        binanceAvailable: agg.binanceAvailable ?? Math.max(0, agg.binance - (agg.binanceUsedMargin ?? 0)),
+        bybitAvailable: agg.bybitAvailable ?? Math.max(0, agg.bybit - (agg.bybitUsedMargin ?? 0)),
       };
     } catch (e) {
-      console.warn('[Stats] Live balance fetch failed or timed out, using ledger:', e);
+      console.warn('[Stats] Live balance fetch failed or timed out, using last known / ledger:', e);
       const ledgerRow = db.db
         .prepare('SELECT total_balance FROM daily_ledger ORDER BY date DESC LIMIT 1')
         .get() as { total_balance: number } | undefined;
-      liveBalances.total = ledgerRow?.total_balance ?? 0;
+      const snapshotRow = db.db
+        .prepare('SELECT closing_balance FROM daily_balance_snapshots ORDER BY date DESC LIMIT 1')
+        .get() as { closing_balance: number | null } | undefined;
+      const fallbackTotal = ledgerRow?.total_balance ?? snapshotRow?.closing_balance ?? 0;
+      const lastKnown = ExchangeManager.getLastKnownBalances();
+      const hasPerExchange = lastKnown.binance > 0 || lastKnown.bybit > 0;
+      if (hasPerExchange) {
+        liveBalances = {
+          total: lastKnown.binance + lastKnown.bybit,
+          binance: lastKnown.binance,
+          bybit: lastKnown.bybit,
+          binanceUsedMargin: 0,
+          bybitUsedMargin: 0,
+          binanceAvailable: lastKnown.binance,
+          bybitAvailable: lastKnown.bybit,
+        };
+      } else {
+        const total = typeof fallbackTotal === 'number' && fallbackTotal > 0 ? fallbackTotal : 0;
+        const half = total / 2;
+        liveBalances = {
+          total,
+          binance: half,
+          bybit: half,
+          binanceUsedMargin: 0,
+          bybitUsedMargin: 0,
+          binanceAvailable: half,
+          bybitAvailable: half,
+        };
+      }
     }
 
     // 2. Fetch manual deposits/withdrawals from DB
@@ -145,6 +191,8 @@ export async function GET() {
         binance_margin: liveBalances.binanceUsedMargin,
         bybit_margin: liveBalances.bybitUsedMargin,
         total_margin: liveBalances.binanceUsedMargin + liveBalances.bybitUsedMargin,
+        binance_available: liveBalances.binanceAvailable,
+        bybit_available: liveBalances.bybitAvailable,
       },
       { headers: { 'Cache-Control': 'no-store, max-age=0' } }
     );
