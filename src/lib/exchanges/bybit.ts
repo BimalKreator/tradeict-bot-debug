@@ -15,6 +15,7 @@ export class BybitExchange {
       enableRateLimit: true,
       options: {
         defaultType: 'linear', // USDT-margined perpetuals
+        recvWindow: 10_000, // 10s drift tolerance for server time vs Bybit (fixes InvalidNonce / recv_window param)
       },
     });
     if (isTestnet) {

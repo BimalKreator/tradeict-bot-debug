@@ -415,7 +415,10 @@ export async function checkAllExits(): Promise<void> {
 
   const manager = new ExchangeManager();
   const tracker = new PositionTracker();
-  const { positions: livePositions, dataComplete } = await tracker.getGroupedPositions({ withDataComplete: true });
+  const { positions: livePositions, dataComplete } = await tracker.getGroupedPositions({
+    withDataComplete: true,
+    forceRefresh: true,
+  });
 
   if (dataComplete) {
     runZombieCleaner(trades, livePositions);

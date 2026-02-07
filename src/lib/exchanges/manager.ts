@@ -40,8 +40,8 @@ export interface RawPositionsResult {
   dataComplete: boolean;
 }
 
-/** Max wait for exchange API calls so UI never hangs 40+ seconds. */
-const EXCHANGE_TIMEOUT_MS = 30_000;
+/** Max wait for exchange API calls. 45s to avoid false timeouts when Binance/Bybit are slow. */
+const EXCHANGE_TIMEOUT_MS = 45_000;
 /** Positions cache TTL: use cache if age < this (ms). */
 const POSITIONS_CACHE_TTL_MS = 1000;
 /** Funding intervals cache TTL to avoid API spam. */
@@ -411,20 +411,25 @@ export class ExchangeManager {
     return 0;
   }
 
+  /** Delay helper to let event loop and GC run between batches. */
+  private static delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   /**
    * Resolves Binance funding interval from HISTORY for the given symbols only.
-   * Interval = (Timestamp[Latest] - Timestamp[Previous]) in ms → hours, rounded to 1, 2, 4, 8.
-   * Skips symbols already in cache unless force=true. Use concurrency limit to avoid rate limits.
+   * Processes in small batches with delay between batches to avoid heap pressure and timeouts.
    */
   async resolveBinanceIntervals(symbols: string[], force: boolean = false): Promise<void> {
-    const CONCURRENCY = 25;
+    const BATCH_SIZE = 15;
+    const DELAY_BETWEEN_BATCHES_MS = 500;
     const toFetch = force ? symbols : symbols.filter((s) => !this.getCachedInterval(s, 'binance'));
     if (toFetch.length === 0) return;
 
     const binanceRates = ExchangeManager.intervalCache.binance;
 
-    for (let i = 0; i < toFetch.length; i += CONCURRENCY) {
-      const batch = toFetch.slice(i, i + CONCURRENCY);
+    for (let i = 0; i < toFetch.length; i += BATCH_SIZE) {
+      const batch = toFetch.slice(i, i + BATCH_SIZE);
       const results = await Promise.all(
         batch.map(async (symbol) => {
           let hours = 0;
@@ -451,6 +456,9 @@ export class ExchangeManager {
         const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : symbol.replace(/USDT:?USDT?/i, '') + 'USDT';
         if (full !== symbol) ExchangeManager.binanceIntervalCache[full] = hours;
         if (base !== symbol && base !== full) ExchangeManager.binanceIntervalCache[base] = hours;
+      }
+      if (i + BATCH_SIZE < toFetch.length) {
+        await ExchangeManager.delay(DELAY_BETWEEN_BATCHES_MS);
       }
     }
   }
