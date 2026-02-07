@@ -1,4 +1,5 @@
 import { db } from '@/lib/db/sqlite';
+import type { ExchangeManager } from '@/lib/exchanges/manager';
 
 type ExitCheckResult =
   | { shouldExit: true; reason: string }
@@ -21,6 +22,99 @@ export interface ActiveTrade {
   funding_received?: number | null;
   /** Funding interval at entry (e.g. '8h', '4h', '1h'). Used for interval-change exit. */
   interval?: string | null;
+}
+
+/** Derive strategy label from long/short exchange (matches screener format). */
+function getStrategyLabel(longExchange: string, shortExchange: string): string {
+  const long = (longExchange ?? '').toLowerCase();
+  const short = (shortExchange ?? '').toLowerCase();
+  const longName = long === 'binance' ? 'Bin' : 'Byb';
+  const shortName = short === 'binance' ? 'Bin' : 'Byb';
+  return `Long ${longName} / Short ${shortName}`;
+}
+
+/**
+ * Strategy Flip (Funding Flip): Exit if current funding rates dictate the OPPOSITE strategy.
+ * - binRate > bybRate → optimal is Long Bybit / Short Binance (Spread +).
+ * - bybRate > binRate → optimal is Long Binance / Short Bybit (Spread -).
+ * Returns true (trigger exit) if current optimal does NOT match trade's entry strategy.
+ */
+export function checkStrategyFlip(
+  trade: ActiveTrade,
+  binRate: number,
+  bybRate: number
+): ExitCheckResult {
+  const tradeLong = (trade.long_exchange ?? '').toLowerCase();
+  const tradeShort = (trade.short_exchange ?? '').toLowerCase();
+
+  let optimalLong: string;
+  let optimalShort: string;
+  if (binRate > bybRate) {
+    optimalLong = 'bybit';
+    optimalShort = 'binance';
+  } else {
+    optimalLong = 'binance';
+    optimalShort = 'bybit';
+  }
+
+  const match = optimalLong === tradeLong && optimalShort === tradeShort;
+  if (match) return { shouldExit: false };
+
+  const entryStrategy = getStrategyLabel(trade.long_exchange, trade.short_exchange);
+  console.warn(
+    `[Exit] Strategy Flipped! Entry: ${entryStrategy}, Current Market requires opposite.`
+  );
+  return { shouldExit: true, reason: 'Strategy Flipped' };
+}
+
+/** Parse interval string to hours (e.g. "4h" -> 4). Returns 0 if unknown. */
+function parseEntryIntervalHours(s: string | null | undefined): number {
+  const v = (s ?? '').toLowerCase().trim();
+  if (v === '1h' || v === '1') return 1;
+  if (v === '2h' || v === '2') return 2;
+  if (v === '4h' || v === '4') return 4;
+  if (v === '8h' || v === '8') return 8;
+  const n = parseFloat(String(v).replace(/h/gi, ''));
+  return !isNaN(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Interval Change (Robust Check): Exit if funding interval on either exchange changed from entry.
+ * Uses cached intervals from ExchangeManager. If current interval is 0 (Unknown/API fail), do NOT exit.
+ */
+export async function checkIntervalChange(
+  trade: ActiveTrade,
+  manager: ExchangeManager
+): Promise<ExitCheckResult> {
+  const entryHours = parseEntryIntervalHours(trade.interval ?? undefined);
+  if (entryHours <= 0) return { shouldExit: false };
+
+  let current: { binance: number; bybit: number };
+  try {
+    current = await manager.getFundingIntervalHours(trade.symbol);
+  } catch (err) {
+    console.warn('[Exit] getFundingIntervalHours failed, skipping interval check:', err);
+    return { shouldExit: false };
+  }
+
+  if (current.binance === 0 || current.bybit === 0) {
+    return { shouldExit: false };
+  }
+
+  if (current.binance !== entryHours) {
+    console.warn(
+      `[Exit] Interval Changed! Entry: ${trade.interval ?? entryHours + 'h'}, Current: ${current.binance}h.`
+    );
+    return { shouldExit: true, reason: 'Funding Interval Changed' };
+  }
+  if (current.bybit !== entryHours) {
+    console.warn(
+      `[Exit] Interval Changed! Entry: ${trade.interval ?? entryHours + 'h'}, Current: ${current.bybit}h.`
+    );
+    return { shouldExit: true, reason: 'Funding Interval Changed' };
+  }
+
+  return { shouldExit: false };
 }
 
 export interface BotSettings {

@@ -10,6 +10,8 @@ import {
   checkLiquidationBuffer,
   checkNegativeFunding,
   checkMTMStoploss,
+  checkStrategyFlip,
+  checkIntervalChange,
   type ActiveTrade,
   type BotSettings,
 } from './strategies';
@@ -63,15 +65,6 @@ function fetchActiveTrades(): TradeRow[] {
         WHERE status = 'ACTIVE'`
     )
     .all() as TradeRow[];
-}
-
-/** Normalize interval for comparison (e.g. "8h", "4h", "1h"). */
-function normalizeInterval(s: string | null | undefined): string {
-  const v = (s ?? '').toLowerCase().trim();
-  if (v === '1h' || v === '1') return '1h';
-  if (v === '2h' || v === '2') return '2h';
-  if (v === '4h' || v === '4') return '4h';
-  return v || '8h';
 }
 
 /** Map exchange name to exit price key. */
@@ -212,53 +205,6 @@ async function executeExit(
   }
 }
 
-/** Parse interval string to hours (e.g. "4h" -> 4). */
-function parseIntervalToHours(s: string | null | undefined): number {
-  const v = (s ?? '').toLowerCase().trim();
-  if (v === '1h' || v === '1') return 1;
-  if (v === '2h' || v === '2') return 2;
-  if (v === '4h' || v === '4') return 4;
-  if (v === '8h' || v === '8') return 8;
-  const n = parseFloat(v.replace('h', ''));
-  return !isNaN(n) && n > 0 ? n : 0;
-}
-
-/**
- * Exit only if we are 100% sure the interval has changed (e.g. known 8h -> known 1h).
- * If Binance or Bybit returns 0 (Unknown), DO NOT exit — prevents panic-selling valid 1h/4h trades.
- */
-async function checkIntervalChange(trade: TradeRow, manager: ExchangeManager): Promise<boolean> {
-  const tradeHours = parseIntervalToHours(trade.interval ?? undefined);
-  if (tradeHours <= 0) return false;
-
-  let live: { binance: number; bybit: number };
-  try {
-    live = await manager.getFundingIntervalHours(trade.symbol);
-  } catch (err) {
-    console.warn('[ExitController] getFundingIntervalHours failed, skipping interval check:', err);
-    return false;
-  }
-
-  if (live.binance === 0 || live.bybit === 0) {
-    return false;
-  }
-
-  if (live.binance === tradeHours && live.bybit === tradeHours) return false;
-
-  const tradeLabel = `${tradeHours}h`;
-  const binLabel = live.binance > 0 ? `${live.binance}h` : 'Unknown';
-  const bybLabel = live.bybit > 0 ? `${live.bybit}h` : 'Unknown';
-  console.warn(
-    `[Exit] Interval Mismatch: Trade=${tradeLabel} vs Binance=${binLabel} Bybit=${bybLabel}. Exiting ${trade.symbol}...`
-  );
-  try {
-    const result = await manager.closeAllPositions(trade.symbol);
-    archiveAndMarkClosed(trade, 'Funding Interval Changed', 'Bot', result.exitPrices);
-  } catch (err) {
-    console.error('[ExitController] Interval-change exit failed:', err);
-  }
-  return true;
-}
 
 function markTradeClosed(trade: TradeRow, reason: string) {
   try {
@@ -448,6 +394,21 @@ function runGhostImport(
   }
 }
 
+function getFundingRatesForSymbol(
+  binanceRates: Record<string, { fundingRate?: number }>,
+  bybitRates: Record<string, { fundingRate?: number }>,
+  symbol: string
+): { binRate: number; bybRate: number } {
+  const base = normalizeSymbol(symbol);
+  const full = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
+  const bin = binanceRates[full] ?? binanceRates[base] ?? binanceRates[`${base}/USDT:USDT`];
+  const byb = bybitRates[full] ?? bybitRates[base] ?? bybitRates[`${base}/USDT:USDT`];
+  return {
+    binRate: typeof bin?.fundingRate === 'number' ? bin.fundingRate : 0,
+    bybRate: typeof byb?.fundingRate === 'number' ? byb.fundingRate : 0,
+  };
+}
+
 export async function checkAllExits(): Promise<void> {
   const settings = fetchSettings();
   let trades = fetchActiveTrades();
@@ -464,13 +425,40 @@ export async function checkAllExits(): Promise<void> {
     trades = fetchActiveTrades();
   }
 
+  let fundingRates: { binance: Record<string, { fundingRate?: number }>; bybit: Record<string, { fundingRate?: number }> } | null = null;
+  if (trades.length > 0) {
+    try {
+      fundingRates = await manager.getFundingRates();
+    } catch (err) {
+      console.warn('[ExitController] getFundingRates failed, skipping strategy-flip checks:', err);
+    }
+  }
+
   for (const trade of trades) {
     try {
       const brokenHandled = await checkBrokenHedge(trade, manager);
       if (brokenHandled) continue;
 
-      const intervalExited = await checkIntervalChange(trade, manager);
-      if (intervalExited) continue;
+      if (fundingRates) {
+        const { binRate, bybRate } = getFundingRatesForSymbol(
+          fundingRates.binance,
+          fundingRates.bybit,
+          trade.symbol
+        );
+        if (binRate !== 0 || bybRate !== 0) {
+          const flip = checkStrategyFlip(trade, binRate, bybRate);
+          if (flip.shouldExit) {
+            await executeExit(trade, flip.reason, manager);
+            continue;
+          }
+        }
+      }
+
+      const intervalResult = await checkIntervalChange(trade, manager);
+      if (intervalResult.shouldExit) {
+        await executeExit(trade, intervalResult.reason, manager);
+        continue;
+      }
 
       if (!settings.auto_exit_enabled) {
         console.log(`Auto Exit OFF: Monitoring ${trade.symbol} only.`);
