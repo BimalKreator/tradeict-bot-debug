@@ -28,14 +28,22 @@ function roundIntervalHours(h: number): number {
   return best;
 }
 
+/** Persisted cache shape: intervals + updatedAt for priority ordering. */
+interface PersistedCache {
+  intervals?: Record<string, number>;
+  updatedAt?: Record<string, number>;
+}
+
 /**
  * Smart Interval Discovery: chunked scanning of Binance funding rate history
  * to get TRUE intervals (1h, 2h, 4h, 8h) without triggering API rate limits.
- * Screener reads from cache only (lightning fast); batches run in background every 15 min.
+ * Symbols are scanned by priority (1h first, then 2h, 4h, 8h) so fast-funding tokens stay in Batch 0.
  */
 export class IntervalManager {
   private static instance: IntervalManager | null = null;
   private intervalCache: Record<string, number> = {};
+  /** When each symbol was last updated; used to sort by "oldest checked first" within same tier. */
+  private lastUpdatedAt: Record<string, number> = {};
 
   static getInstance(): IntervalManager {
     if (IntervalManager.instance === null) {
@@ -45,33 +53,67 @@ export class IntervalManager {
     return IntervalManager.instance;
   }
 
-  /** Load cache from disk so bot has full interval data immediately after restart. */
+  /** Load cache from disk (intervals + updatedAt). Supports legacy format (intervals only). */
   loadCache(): void {
     try {
       if (!fs.existsSync(CACHE_PATH)) return;
       const raw = fs.readFileSync(CACHE_PATH, 'utf-8');
-      const data = JSON.parse(raw);
-      if (data && typeof data === 'object') {
-        this.intervalCache = { ...data };
-        const n = Object.keys(this.intervalCache).length;
-        console.log(`[IntervalManager] Loaded ${n} intervals from ${CACHE_PATH}`);
+      const data = JSON.parse(raw) as PersistedCache | Record<string, number>;
+      if (!data || typeof data !== 'object') return;
+      if ('intervals' in data && data.intervals && typeof data.intervals === 'object') {
+        this.intervalCache = { ...data.intervals };
+        this.lastUpdatedAt = data.updatedAt && typeof data.updatedAt === 'object' ? { ...data.updatedAt } : {};
+      } else {
+        this.intervalCache = { ...(data as Record<string, number>) };
+        this.lastUpdatedAt = {};
       }
+      const n = Object.keys(this.intervalCache).length;
+      console.log(`[IntervalManager] Loaded ${n} intervals from ${CACHE_PATH}`);
     } catch {
       // File missing or invalid — start with empty cache
     }
   }
 
-  /** Persist cache to disk. Call after each batch or initial scan completes. */
+  /** Persist intervals + updatedAt to disk. Call after every batch or initial scan. */
   saveCache(): void {
     try {
       const dir = path.dirname(CACHE_PATH);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(CACHE_PATH, JSON.stringify(this.intervalCache, null, 0), 'utf-8');
+      const payload: PersistedCache = {
+        intervals: this.intervalCache,
+        updatedAt: this.lastUpdatedAt,
+      };
+      fs.writeFileSync(CACHE_PATH, JSON.stringify(payload, null, 0), 'utf-8');
     } catch (err) {
       console.warn('[IntervalManager] saveCache failed:', err);
     }
+  }
+
+  /**
+   * Returns all USDT symbols sorted by priority: 1h first, then 2h, 4h, 8h.
+   * Within same interval, oldest-checked first (rotation). Batch 0 will thus scan high-priority tokens.
+   */
+  async getPrioritizedSymbols(manager: ExchangeManager): Promise<string[]> {
+    const { binance } = await manager.getRates();
+    const all = Object.keys(binance)
+      .filter((s) => s.includes('USDT'))
+      .sort();
+    return all.slice().sort((a, b) => {
+      const hoursA = this.getInterval(a);
+      const hoursB = this.getInterval(b);
+      if (hoursA !== hoursB) return hoursA - hoursB;
+      const atA = this.getUpdatedAt(a);
+      const atB = this.getUpdatedAt(b);
+      return atA - atB;
+    });
+  }
+
+  private getUpdatedAt(symbol: string): number {
+    const full = symbol.includes('/') ? symbol : (symbol.replace(/USDT$/i, '') || symbol) + '/USDT:USDT';
+    const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : (symbol.replace(/USDT:?USDT?/i, '') || symbol) + 'USDT';
+    return this.lastUpdatedAt[symbol] ?? this.lastUpdatedAt[full] ?? this.lastUpdatedAt[base] ?? 0;
   }
 
   /**
@@ -84,10 +126,7 @@ export class IntervalManager {
       console.log(`[IntervalManager] Cache has ${entries} entries, skipping initial full scan`);
       return;
     }
-    const { binance } = await manager.getRates();
-    const allSymbols = Object.keys(binance)
-      .filter((s) => s.includes('USDT'))
-      .sort();
+    const allSymbols = await this.getPrioritizedSymbols(manager);
     if (allSymbols.length === 0) {
       console.log('[IntervalManager] No symbols for initial scan');
       return;
@@ -121,21 +160,22 @@ export class IntervalManager {
 
   /**
    * Run one batch of the chunked scan (25% of symbols when totalBatches=4).
-   * Fetches funding rate history for each symbol in the chunk and computes interval from time diff.
+   * Uses priority order (1h → 2h → 4h → 8h) so Batch 0 always scans fast-funding tokens.
    */
   async runBatchScan(manager: ExchangeManager, batchIndex: number, totalBatches: number): Promise<void> {
-    const { binance } = await manager.getRates();
-    const allSymbols = Object.keys(binance)
-      .filter((s) => s.includes('USDT'))
-      .sort();
+    const allSymbols = await this.getPrioritizedSymbols(manager);
     if (allSymbols.length === 0) {
-      console.log('[IntervalManager] No symbols from getRates(), skipping batch');
+      console.log('[IntervalManager] No symbols from getPrioritizedSymbols(), skipping batch');
       return;
     }
     const chunkSize = Math.ceil(allSymbols.length / totalBatches);
+    const batchSymbols = allSymbols.slice(
+      batchIndex * chunkSize,
+      (batchIndex + 1) * chunkSize
+    );
+    if (batchSymbols.length === 0) return;
+    const chunk = batchSymbols;
     const start = batchIndex * chunkSize;
-    const chunk = allSymbols.slice(start, start + chunkSize);
-    if (chunk.length === 0) return;
 
     console.log(
       `[IntervalManager] Batch ${batchIndex + 1}/${totalBatches}: scanning ${chunk.length} symbols (${start}-${start + chunk.length - 1})`
@@ -170,11 +210,19 @@ export class IntervalManager {
   }
 
   private setCached(symbol: string, hours: number): void {
+    const now = Date.now();
     this.intervalCache[symbol] = hours;
+    this.lastUpdatedAt[symbol] = now;
     const full = symbol.includes('/') ? symbol : (symbol.replace(/USDT$/i, '') || symbol) + '/USDT:USDT';
     const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : (symbol.replace(/USDT:?USDT?/i, '') || symbol) + 'USDT';
-    if (full !== symbol) this.intervalCache[full] = hours;
-    if (base !== symbol && base !== full) this.intervalCache[base] = hours;
+    if (full !== symbol) {
+      this.intervalCache[full] = hours;
+      this.lastUpdatedAt[full] = now;
+    }
+    if (base !== symbol && base !== full) {
+      this.intervalCache[base] = hours;
+      this.lastUpdatedAt[base] = now;
+    }
   }
 
   /**
