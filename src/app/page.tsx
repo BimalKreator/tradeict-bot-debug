@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
-import { LayoutDashboard, Wallet, Settings } from 'lucide-react';
+import { LayoutDashboard, Wallet, Settings, Banknote } from 'lucide-react';
 import { clsx } from 'clsx';
 import { MobileSystemStatus, StatsGrid, FundingCountdown } from '../components/dashboard';
 import { SettingsPanel } from '../components/settings';
@@ -18,11 +18,12 @@ const FundingTable = dynamic(
   { ssr: false }
 );
 
-type Tab = 'dashboard' | 'portfolio' | 'settings';
+type Tab = 'dashboard' | 'portfolio' | 'capital' | 'settings';
 
 const tabs: { id: Tab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'portfolio', label: 'Portfolio', icon: Wallet },
+  { id: 'capital', label: 'Capital', icon: Banknote },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -62,6 +63,10 @@ export default function Home() {
               onClick={() => {
                 if (id === 'portfolio') {
                   router.push('/portfolio');
+                  return;
+                }
+                if (id === 'capital') {
+                  router.push('/capital');
                   return;
                 }
                 setActiveTab(id);
