@@ -147,7 +147,8 @@ export async function refreshScreenerCache(minSpreadDecimal: number = 0): Promis
   try {
     const manager = new ExchangeManager();
     await manager.refreshIntervalsIfNeeded();
-    const { binance, bybit } = await manager.getFundingRates();
+    // Real-time rates from WebSocket; fallback to REST if WS not ready
+    const { binance, bybit } = await manager.getRates();
     const common = getCommonTokens(binance, bybit);
     await manager.resolveBinanceIntervals(common);
     manager.populateBybitIntervalsFromRates(bybit);

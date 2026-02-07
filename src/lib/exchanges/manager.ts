@@ -4,6 +4,7 @@ import { insertActiveTrade } from '../db/active-trades';
 import { archiveTrade } from '../db/history';
 import { BinanceExchange } from './binance';
 import { BybitExchange } from './bybit';
+import { WebSocketManager } from './websocket';
 
 export interface DualTradeSides {
   binance: 'BUY' | 'SELL';
@@ -48,6 +49,8 @@ const POSITIONS_CACHE_TTL_MS = 1000;
 const INTERVAL_CACHE_TTL_MS = 60_000;
 /** Refresh Binance/Bybit funding intervals at most once per hour (new tokens, interval changes). */
 const INTERVAL_REFRESH_RATE_MS = 60 * 60 * 1000;
+/** Run resolveBinanceIntervals every 30 min to catch interval changes (e.g. 8h -> 4h). */
+const INTERVAL_SCAN_PERIOD_MS = 30 * 60 * 1000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -69,6 +72,10 @@ function logExchangeError(context: string, err: unknown) {
 export class ExchangeManager {
   private binance: BinanceExchange;
   private bybit: BybitExchange;
+  /** WebSocket manager for real-time price & funding rate; interval logic stays REST/history-based. */
+  readonly wsManager: WebSocketManager;
+  /** 30-min interval scan timer for resolveBinanceIntervals. */
+  private intervalScanTimer: ReturnType<typeof setInterval> | null = null;
   /** Static cache shared across all instances so UI does not flicker on new requests. */
   private static lastValidBalances: { binance: number; bybit: number } = { binance: 0, bybit: 0 };
   private static lastValidPositions: { binance: Position[]; bybit: Position[] } = { binance: [], bybit: [] };
@@ -112,11 +119,80 @@ export class ExchangeManager {
   constructor() {
     this.binance = new BinanceExchange();
     this.bybit = new BybitExchange();
+    this.wsManager = new WebSocketManager();
+    this.wsManager.start();
+    this.scheduleIntervalScan();
   }
 
   /**
-   * Fetches funding rates from both Binance and Bybit in parallel.
-   * Returns only USDT perpetuals. Raw rates for both exchanges.
+   * Runs resolveBinanceIntervals every 30 minutes so interval changes (e.g. 8h -> 4h) are detected.
+   * Uses symbols from the current WS (or REST) rates so no separate symbol list is required.
+   */
+  private scheduleIntervalScan(): void {
+    if (this.intervalScanTimer != null) return;
+    this.intervalScanTimer = setInterval(() => {
+      this.getRates()
+        .then((r) => {
+          const symbols = Object.keys(r.binance).filter((s) => s.includes('/'));
+          if (symbols.length > 0) {
+            const baseSymbols = symbols.map((s) => s.split('/')[0] + 'USDT');
+            return this.resolveBinanceIntervals(baseSymbols, true);
+          }
+        })
+        .catch(() => {});
+    }, INTERVAL_SCAN_PERIOD_MS);
+    console.log('[ExchangeManager] Interval scan scheduled every 30 minutes');
+  }
+
+  /**
+   * Returns funding rates from WebSocket cache (real-time). Falls back to one-time REST if WS not ready.
+   * Use this for the screener so updates are instant and API limits are saved.
+   */
+  async getRates(): Promise<FundingRatesResult> {
+    const cache = this.wsManager.ratesCache;
+    const binanceKeys = Object.keys(cache.binance).filter((s) => s.includes('/'));
+    const bybitKeys = Object.keys(cache.bybit).filter((s) => s.includes('/'));
+    if (binanceKeys.length > 0 && bybitKeys.length > 0) {
+      const binance: Record<string, FundingRate> = {};
+      const bybit: Record<string, FundingRate> = {};
+      for (const sym of binanceKeys) {
+        const e = cache.binance[sym];
+        if (e) {
+          binance[sym] = {
+            symbol: sym,
+            fundingRate: e.fundingRate,
+            fundingTimestamp: e.nextFundingTime,
+            markPrice: e.price,
+            info: {},
+          };
+        }
+      }
+      for (const sym of bybitKeys) {
+        const e = cache.bybit[sym];
+        if (e) {
+          bybit[sym] = {
+            symbol: sym,
+            fundingRate: e.fundingRate,
+            fundingTimestamp: e.nextFundingTime,
+            markPrice: e.price,
+            info: {},
+          };
+        }
+      }
+      return { binance, bybit };
+    }
+    // Fallback: one-time REST until WS warms up
+    const rest = await this.getFundingRates();
+    const bybitSymbols = Object.keys(rest.bybit);
+    if (bybitSymbols.length > 0) {
+      this.wsManager.setBybitSymbols(bybitSymbols);
+    }
+    return rest;
+  }
+
+  /**
+   * Fetches funding rates from both Binance and Bybit in parallel (REST).
+   * Returns only USDT perpetuals. Used as fallback when WS cache is empty.
    */
   async getFundingRates(): Promise<FundingRatesResult> {
     const binanceRatesFetch = (async () => {
