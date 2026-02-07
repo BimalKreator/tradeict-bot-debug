@@ -12,9 +12,12 @@ export async function GET() {
 
     let opportunities = getBestOpportunities();
 
+    // Return immediately with current cache; refresh in background so UI never blocks on exchange calls
     if (opportunities.length === 0 || getCacheAge() > 60) {
-      console.log('[API Screener] Cache empty/stale, refreshing...');
-      await refreshScreenerCache(minSpreadDecimal);
+      refreshScreenerCache(minSpreadDecimal).then(() => {
+        console.log('[API Screener] Background refresh completed');
+      }).catch((e) => console.warn('[API Screener] Background refresh failed:', e));
+      // Use whatever we have (may be empty on first load)
       opportunities = getBestOpportunities();
     }
 

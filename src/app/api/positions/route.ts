@@ -11,6 +11,8 @@ function normalizeSymbol(symbol: string): string {
   return s.replace(/USDT:?USDT?$/i, '');
 }
 
+const POSITIONS_UI_TIMEOUT_MS = 10_000;
+
 export async function GET() {
   console.log('API /positions called');
 
@@ -19,10 +21,26 @@ export async function GET() {
     const availableSlots = Math.max(0, TOTAL_SLOTS - used);
 
     const tracker = new PositionTracker();
-    const { positions } = await tracker.getGroupedPositions({
-      withDataComplete: true,
-      forceRefresh: false,
-    });
+    let result: Awaited<ReturnType<PositionTracker['getGroupedPositions']>>;
+    try {
+      result = await Promise.race([
+        tracker.getGroupedPositions({
+          withDataComplete: true,
+          forceRefresh: false,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Positions fetch timeout')), POSITIONS_UI_TIMEOUT_MS)
+        ),
+      ]);
+    } catch (timeoutOrErr) {
+      if (String(timeoutOrErr).includes('timeout')) {
+        console.warn('[API /positions] Fetch timed out, returning empty positions');
+        result = { positions: [], dataComplete: false };
+      } else {
+        throw timeoutOrErr;
+      }
+    }
+    const { positions } = result;
     const tradeBySymbol = new Map<string, ActiveTradeRow>();
     for (const r of activeRows) {
       tradeBySymbol.set(r.symbol, r);

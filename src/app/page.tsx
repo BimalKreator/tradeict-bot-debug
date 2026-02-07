@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { LayoutDashboard, Wallet, Settings, Banknote } from 'lucide-react';
 import { clsx } from 'clsx';
@@ -34,7 +35,7 @@ type SettingsState = {
 };
 
 export default function Home() {
-  const router = useRouter();
+  const pathname = usePathname();
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [settings, setSettings] = useState<SettingsState>({});
 
@@ -51,37 +52,51 @@ export default function Home() {
     };
   }, []);
 
+  const isDashboard = pathname === '/';
+
   return (
     <div className="min-h-screen bg-cyber-black text-white">
       <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
-        {/* Tab bar: Dashboard | Portfolio | Settings */}
+        {/* Tab bar: Dashboard | Portfolio | Capital | Settings — use Link for instant prefetch */}
         <div className="mb-6 flex gap-1 rounded-xl border border-cyan-500/30 bg-black/50 p-1">
-          {tabs.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => {
-                if (id === 'portfolio') {
-                  router.push('/portfolio');
-                  return;
-                }
-                if (id === 'capital') {
-                  router.push('/capital');
-                  return;
-                }
-                setActiveTab(id);
-              }}
-              className={clsx(
-                'flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors',
-                activeTab === id
-                  ? 'bg-cyan-500/20 text-cyan-400'
-                  : 'text-white/70 hover:text-white'
-              )}
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
+          {tabs.map(({ id, label, icon: Icon }) => {
+            const isActive =
+              id === 'dashboard' ? isDashboard && activeTab === 'dashboard'
+              : id === 'portfolio' ? pathname === '/portfolio'
+              : id === 'capital' ? pathname === '/capital'
+              : activeTab === id;
+            const href = id === 'portfolio' ? '/portfolio' : id === 'capital' ? '/capital' : null;
+            if (href) {
+              return (
+                <Link
+                  key={id}
+                  href={href}
+                  prefetch={true}
+                  className={clsx(
+                    'flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors',
+                    isActive ? 'bg-cyan-500/20 text-cyan-400' : 'text-white/70 hover:text-white'
+                  )}
+                >
+                  <Icon className="h-4 w-4" />
+                  {label}
+                </Link>
+              );
+            }
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setActiveTab(id)}
+                className={clsx(
+                  'flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors',
+                  isActive ? 'bg-cyan-500/20 text-cyan-400' : 'text-white/70 hover:text-white'
+                )}
+              >
+                <Icon className="h-4 w-4" />
+                {label}
+              </button>
+            );
+          })}
         </div>
 
         {/* Mobile System Status - visible only on mobile */}

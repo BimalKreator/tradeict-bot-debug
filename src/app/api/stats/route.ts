@@ -44,11 +44,17 @@ export async function GET() {
     db.ensureTodaySnapshot();
     const today = db.getISTDate();
 
-    // 1. Fetch LIVE balances from Binance/Bybit
+    // 1. Fetch LIVE balances from Binance/Bybit (max 10s so UI never hangs)
+    const UI_BALANCE_TIMEOUT_MS = 10_000;
     let liveBalances = { total: 0, binance: 0, bybit: 0, binanceUsedMargin: 0, bybitUsedMargin: 0 };
     try {
       const manager = new ExchangeManager();
-      const agg = await manager.getAggregatedBalances();
+      const agg = await Promise.race([
+        manager.getAggregatedBalances(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Balance fetch timeout')), UI_BALANCE_TIMEOUT_MS)
+        ),
+      ]);
       liveBalances = {
         total: agg.total,
         binance: agg.binance,
@@ -57,7 +63,7 @@ export async function GET() {
         bybitUsedMargin: agg.bybitUsedMargin ?? 0,
       };
     } catch (e) {
-      console.error('[Stats] Failed to fetch live balances:', e);
+      console.warn('[Stats] Live balance fetch failed or timed out, using ledger:', e);
       const ledgerRow = db.db
         .prepare('SELECT total_balance FROM daily_ledger ORDER BY date DESC LIMIT 1')
         .get() as { total_balance: number } | undefined;
