@@ -43,8 +43,10 @@ export interface RawPositionsResult {
 
 /** Max wait for exchange API calls. 45s to avoid false timeouts when Binance/Bybit are slow. */
 const EXCHANGE_TIMEOUT_MS = 45_000;
-/** Positions cache TTL: use cache if age < this (ms). */
-const POSITIONS_CACHE_TTL_MS = 1000;
+/** Positions cache TTL: use cache if age < this (ms). Dashboard uses cache to avoid blocking. */
+const POSITIONS_CACHE_TTL_MS = 10_000;
+/** Balances cache TTL: return last result without API call when fresh. */
+const BALANCES_CACHE_TTL_MS = 10_000;
 /** Funding intervals cache TTL to avoid API spam. */
 const INTERVAL_CACHE_TTL_MS = 60_000;
 /** Refresh Binance/Bybit funding intervals at most once per hour (new tokens, interval changes). */
@@ -82,6 +84,12 @@ export class ExchangeManager {
   /** Raw positions result cache for hybrid fetch (UI = cached, emergency = live). */
   private static lastRawPositionsFetchTime = 0;
   private static lastRawPositionsResult: RawPositionsResult | null = null;
+  /** Return cache when a fetch is in progress to prevent request stacking (non-blocking UI). */
+  private static isFetchingBalances = false;
+  private static lastAggregatedBalances: (AggregatedBalances & { dataComplete: boolean }) | null = null;
+  private static lastAggregatedBalancesTime = 0;
+  private static isFetchingRates = false;
+  private static lastRatesResult: FundingRatesResult | null = null;
   /** Funding rates cache for getFundingIntervals (60s TTL). */
   private static intervalCache: {
     binance: Record<string, FundingRate>;
@@ -158,54 +166,74 @@ export class ExchangeManager {
     console.log('[ExchangeManager] Interval scan scheduled every 30 minutes');
   }
 
-  /**
-   * Returns funding rates from WebSocket cache (real-time). Waits 500ms if cache empty (mapping warm-up), then falls back to REST.
-   * Use this for the screener so updates are instant and API limits are saved.
-   */
-  async getRates(): Promise<FundingRatesResult> {
-    if (!this.wsManager.isReady()) {
-      await new Promise((r) => setTimeout(r, 500));
-    }
-
+  /** Build FundingRatesResult from WS cache; returns null if cache empty. */
+  private getRatesFromCache(): FundingRatesResult | null {
     const cache = this.wsManager.ratesCache;
     const binanceKeys = Object.keys(cache.binance).filter((s) => s.includes('/'));
     const bybitKeys = Object.keys(cache.bybit).filter((s) => s.includes('/'));
-    if (binanceKeys.length > 0 && bybitKeys.length > 0) {
-      const binance: Record<string, FundingRate> = {};
-      const bybit: Record<string, FundingRate> = {};
-      for (const sym of binanceKeys) {
-        const e = cache.binance[sym];
-        if (e) {
-          binance[sym] = {
-            symbol: sym,
-            fundingRate: e.fundingRate,
-            fundingTimestamp: e.nextFundingTime,
-            markPrice: e.price,
-            info: {},
-          };
-        }
+    if (binanceKeys.length === 0 || bybitKeys.length === 0) return null;
+    const binance: Record<string, FundingRate> = {};
+    const bybit: Record<string, FundingRate> = {};
+    for (const sym of binanceKeys) {
+      const e = cache.binance[sym];
+      if (e) {
+        binance[sym] = {
+          symbol: sym,
+          fundingRate: e.fundingRate,
+          fundingTimestamp: e.nextFundingTime,
+          markPrice: e.price,
+          info: {},
+        };
       }
-      for (const sym of bybitKeys) {
-        const e = cache.bybit[sym];
-        if (e) {
-          bybit[sym] = {
-            symbol: sym,
-            fundingRate: e.fundingRate,
-            fundingTimestamp: e.nextFundingTime,
-            markPrice: e.price,
-            info: {},
-          };
-        }
+    }
+    for (const sym of bybitKeys) {
+      const e = cache.bybit[sym];
+      if (e) {
+        bybit[sym] = {
+          symbol: sym,
+          fundingRate: e.fundingRate,
+          fundingTimestamp: e.nextFundingTime,
+          markPrice: e.price,
+          info: {},
+        };
       }
-      return { binance, bybit };
     }
-    // Fallback: REST when WS still empty after wait (e.g. connection fail)
-    const rest = await this.getFundingRates();
-    const bybitSymbols = Object.keys(rest.bybit);
-    if (bybitSymbols.length > 0) {
-      this.wsManager.setBybitSymbols(bybitSymbols);
+    return { binance, bybit };
+  }
+
+  /**
+   * Returns funding rates from WebSocket cache (real-time). Waits 500ms if cache empty, then falls back to REST.
+   * If a fetch is already in progress, returns last cached result immediately (non-blocking).
+   */
+  async getRates(): Promise<FundingRatesResult> {
+    if (ExchangeManager.isFetchingRates && ExchangeManager.lastRatesResult != null) {
+      return ExchangeManager.lastRatesResult;
     }
-    return rest;
+    const fromCache = this.getRatesFromCache();
+    if (fromCache != null) {
+      ExchangeManager.lastRatesResult = fromCache;
+      return fromCache;
+    }
+    ExchangeManager.isFetchingRates = true;
+    try {
+      if (!this.wsManager.isReady()) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      const afterWait = this.getRatesFromCache();
+      if (afterWait != null) {
+        ExchangeManager.lastRatesResult = afterWait;
+        return afterWait;
+      }
+      const rest = await this.getFundingRates();
+      const bybitSymbols = Object.keys(rest.bybit);
+      if (bybitSymbols.length > 0) {
+        this.wsManager.setBybitSymbols(bybitSymbols);
+      }
+      ExchangeManager.lastRatesResult = rest;
+      return rest;
+    } finally {
+      ExchangeManager.isFetchingRates = false;
+    }
   }
 
   /**
@@ -298,10 +326,23 @@ export class ExchangeManager {
 
   /**
    * Fetches USDT balances and used margin from both exchanges in parallel.
-   * Uses Promise.allSettled so one failure does not block the other.
+   * Returns cached result immediately if a fetch is in progress or cache is fresh (< 10s) to avoid blocking UI.
    */
   async getAggregatedBalances(): Promise<AggregatedBalances & { dataComplete: boolean }> {
-    const binanceBalanceFetch = (async () => {
+    if (ExchangeManager.isFetchingBalances && ExchangeManager.lastAggregatedBalances != null) {
+      return ExchangeManager.lastAggregatedBalances;
+    }
+    const now = Date.now();
+    if (
+      ExchangeManager.lastAggregatedBalances != null &&
+      now - ExchangeManager.lastAggregatedBalancesTime < BALANCES_CACHE_TTL_MS
+    ) {
+      return ExchangeManager.lastAggregatedBalances;
+    }
+
+    ExchangeManager.isFetchingBalances = true;
+    try {
+      const binanceBalanceFetch = (async () => {
       const start = Date.now();
       try {
         const r = await withTimeout(
@@ -367,7 +408,7 @@ export class ExchangeManager {
       throw new Error('Initial fetch failed');
     }
 
-    return {
+    const result: AggregatedBalances & { dataComplete: boolean } = {
       binance: binanceBalance,
       bybit: bybitBalance,
       total,
@@ -378,6 +419,12 @@ export class ExchangeManager {
       bybitAvailable: Math.max(0, bybitBalance - bybitUsedMargin),
       dataComplete,
     };
+    ExchangeManager.lastAggregatedBalances = result;
+    ExchangeManager.lastAggregatedBalancesTime = Date.now();
+    return result;
+    } finally {
+      ExchangeManager.isFetchingBalances = false;
+    }
   }
 
   /**

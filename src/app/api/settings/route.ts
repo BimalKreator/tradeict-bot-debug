@@ -15,6 +15,10 @@ const ALLOWED_KEYS = [
   'manual_trading_enabled',
 ] as const;
 
+/**
+ * GET: Returns settings from DB only. No exchange/API calls — page loads instantly.
+ * Use POST /api/settings/test to validate exchange connection.
+ */
 export async function GET() {
   try {
     const row = db.db.prepare('SELECT * FROM bot_settings WHERE id = 1').get();
