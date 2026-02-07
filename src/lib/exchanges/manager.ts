@@ -122,6 +122,20 @@ export class ExchangeManager {
     this.wsManager = new WebSocketManager();
     this.wsManager.start();
     this.scheduleIntervalScan();
+    this.initialize().catch((err) => console.warn('[ExchangeManager] initialize failed', err));
+  }
+
+  /**
+   * Load Binance markets and update WS symbol map so cache uses unified symbols (BTC/USDT:USDT).
+   * Called automatically from constructor; can also be called at startup to ensure map is ready.
+   */
+  async initialize(): Promise<void> {
+    try {
+      const markets = await this.binance.loadMarketsAndGet();
+      this.wsManager.updateSymbolMap(markets);
+    } catch (err) {
+      console.warn('[ExchangeManager] initialize (load markets) failed:', err);
+    }
   }
 
   /**
@@ -145,18 +159,12 @@ export class ExchangeManager {
   }
 
   /**
-   * Returns funding rates from WebSocket cache (real-time). Waits up to 2s for WS warm-up, then falls back to REST.
+   * Returns funding rates from WebSocket cache (real-time). Waits 500ms if cache empty (mapping warm-up), then falls back to REST.
    * Use this for the screener so updates are instant and API limits are saved.
    */
   async getRates(): Promise<FundingRatesResult> {
-    const WAIT_MS = 2000;
-    const POLL_MS = 200;
     if (!this.wsManager.isReady()) {
-      const deadline = Date.now() + WAIT_MS;
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, POLL_MS));
-        if (this.wsManager.isReady()) break;
-      }
+      await new Promise((r) => setTimeout(r, 500));
     }
 
     const cache = this.wsManager.ratesCache;

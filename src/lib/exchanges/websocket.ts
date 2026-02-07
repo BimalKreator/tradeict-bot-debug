@@ -42,7 +42,10 @@ export class WebSocketManager {
   /** Public cache: symbol -> { price, fundingRate, nextFundingTime }. Keys are unified CCXT form (e.g. BTC/USDT:USDT) only. */
   public ratesCache: RatesCache = { binance: {}, bybit: {} };
 
-  /** Lazy map raw symbol -> unified (e.g. BTCUSDT -> BTC/USDT:USDT) to avoid normalizing on every tick. */
+  /** Map exchange symbol id (e.g. BTCUSDT) -> unified symbol (e.g. BTC/USDT:USDT). Populated via updateSymbolMap() from CCXT markets. */
+  private symbolMap: Record<string, string> = {};
+
+  /** Lazy map raw symbol -> unified when symbolMap not yet populated. */
   private reverseSymbolMap: Record<string, string> = {};
 
   private binanceWs: WebSocket | null = null;
@@ -55,9 +58,20 @@ export class WebSocketManager {
   private isTestnet = process.env.USE_TESTNET === 'true';
   private destroyed = false;
 
-  /** Resolve unified symbol (store once per raw symbol). */
+  /** Resolve unified symbol: prefer CCXT symbolMap, else lazy toCcxtSymbol. */
   private unifiedKey(raw: string): string {
-    return this.reverseSymbolMap[raw] ?? (this.reverseSymbolMap[raw] = toCcxtSymbol(raw));
+    return this.symbolMap[raw] ?? this.reverseSymbolMap[raw] ?? (this.reverseSymbolMap[raw] = toCcxtSymbol(raw));
+  }
+
+  /**
+   * Bridge WS symbol (e.g. BTCUSDT) to screener symbol (e.g. BTC/USDT:USDT).
+   * Call after loading CCXT markets: maps market.id -> market.symbol.
+   */
+  updateSymbolMap(markets: { id?: string; symbol?: string }[]): void {
+    for (const m of markets) {
+      if (m.id != null && m.symbol != null) this.symbolMap[m.id] = m.symbol;
+    }
+    console.log(`[WS] Symbol map updated: ${Object.keys(this.symbolMap).length} entries`);
   }
 
   private get binanceUrl(): string {
@@ -92,8 +106,8 @@ export class WebSocketManager {
             const price = parseFloat(String(o.p ?? 0)) || 0;
             const fundingRate = parseFloat(String(o.r ?? 0)) || 0;
             const nextFundingTime = typeof o.T === 'number' ? o.T : parseInt(String(o.T ?? 0), 10) || 0;
-            const key = this.unifiedKey(sym);
-            this.ratesCache.binance[key] = { price, fundingRate, nextFundingTime };
+            const unified = this.symbolMap[sym] ?? this.unifiedKey(sym);
+            this.ratesCache.binance[unified] = { price, fundingRate, nextFundingTime };
           }
           // After first successful message, ensure Bybit is subscribed to the same symbols (if not yet)
           if (this.bybitWs?.readyState === WebSocket.OPEN && this.bybitSubscribed.size === 0) {

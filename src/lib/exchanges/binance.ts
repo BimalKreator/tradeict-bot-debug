@@ -28,6 +28,14 @@ export class BinanceExchange {
   }
 
   /**
+   * Loads markets and returns them for symbol mapping (e.g. WS id -> unified symbol).
+   */
+  async loadMarketsAndGet(): Promise<{ id?: string; symbol?: string }[]> {
+    await this.exchange.loadMarkets();
+    return Object.values(this.exchange.markets) as { id?: string; symbol?: string }[];
+  }
+
+  /**
    * Fetches funding rates for USDT perpetuals.
    */
   async fetchFundingRates(): Promise<Record<string, ccxt.FundingRate>> {
