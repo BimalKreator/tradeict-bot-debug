@@ -45,6 +45,14 @@ export async function checkHedgeIntegrity(
       }
       const base = symbol.includes('/') ? symbol.split('/')[0] : symbol;
       const liveRaw = await manager.getRawPositions(true);
+      if (!liveRaw.binance.ok) {
+        console.warn('[RiskMonitor] ⚠️ Binance API failed. Skipping hedge check to prevent false exit.');
+        continue;
+      }
+      if (!liveRaw.bybit.ok) {
+        console.warn('[RiskMonitor] ⚠️ Bybit API failed. Skipping hedge check to prevent false exit.');
+        continue;
+      }
       const liveGrouped = groupRawPositions(liveRaw);
       if (!liveGrouped.dataComplete) {
         console.warn('[RiskMonitor] Live re-check incomplete - skipping exit decision');
