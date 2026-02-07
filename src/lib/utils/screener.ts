@@ -79,7 +79,8 @@ function evaluateOpportunity(
   const binHours = getHours(binRate, 'binance');
   const byHours = getHours(byRate, 'bybit');
 
-  if (binHours > 0 && byHours > 0 && binHours !== byHours) return null;
+  // STRICT: Same interval required — never show mismatched (e.g. 8h vs 1h)
+  if (binHours !== byHours) return null;
 
   const binTime = binRate.fundingTimestamp || 0;
   const byTime = byRate.fundingTimestamp || 0;
@@ -138,7 +139,15 @@ export function calculateFundingSpreads(
     const opp = evaluateOpportunity(symbol, binRate, byRate);
     if (opp) opportunities.push(opp);
   }
-  return opportunities.sort((a, b) => b.spread - a.spread);
+  return opportunities.sort((a, b) => {
+    const getDuration = (str: string) => parseFloat(String(str).replace('h', '')) || 999;
+    const durA = getDuration(a.primaryInterval);
+    const durB = getDuration(b.primaryInterval);
+    // Primary: Lower interval first (1h > 2h > 4h > 8h)
+    if (durA !== durB) return durA - durB;
+    // Secondary: Higher spread first
+    return b.spread - a.spread;
+  });
 }
 
 export async function refreshScreenerCache(): Promise<void> {
