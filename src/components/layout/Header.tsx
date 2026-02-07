@@ -15,9 +15,9 @@ export function Header() {
       <Image
         src="/logo.png"
         alt="Tradeict Earner"
-        width={120}
-        height={40}
-        className="h-10 w-auto max-h-[30px] md:max-h-none md:h-10 object-contain"
+        width={150}
+        height={50}
+        className="h-[50px] w-auto max-h-[38px] md:max-h-none md:h-[50px] object-contain"
       />
 
       {/* Center: LIVE SYSTEM badge - hidden on mobile, reflects bot state */}
