@@ -39,8 +39,11 @@ function toBybitSymbol(s: string): string {
 }
 
 export class WebSocketManager {
-  /** Public cache: symbol -> { price, fundingRate, nextFundingTime }. Keys in CCXT form (e.g. BTC/USDT:USDT). */
+  /** Public cache: symbol -> { price, fundingRate, nextFundingTime }. Keys are unified CCXT form (e.g. BTC/USDT:USDT) only. */
   public ratesCache: RatesCache = { binance: {}, bybit: {} };
+
+  /** Lazy map raw symbol -> unified (e.g. BTCUSDT -> BTC/USDT:USDT) to avoid normalizing on every tick. */
+  private reverseSymbolMap: Record<string, string> = {};
 
   private binanceWs: WebSocket | null = null;
   private bybitWs: WebSocket | null = null;
@@ -51,6 +54,11 @@ export class WebSocketManager {
   private bybitSubscribed = new Set<string>();
   private isTestnet = process.env.USE_TESTNET === 'true';
   private destroyed = false;
+
+  /** Resolve unified symbol (store once per raw symbol). */
+  private unifiedKey(raw: string): string {
+    return this.reverseSymbolMap[raw] ?? (this.reverseSymbolMap[raw] = toCcxtSymbol(raw));
+  }
 
   private get binanceUrl(): string {
     return this.isTestnet ? BINANCE_WS_TEST : BINANCE_WS_MAIN;
@@ -84,9 +92,8 @@ export class WebSocketManager {
             const price = parseFloat(String(o.p ?? 0)) || 0;
             const fundingRate = parseFloat(String(o.r ?? 0)) || 0;
             const nextFundingTime = typeof o.T === 'number' ? o.T : parseInt(String(o.T ?? 0), 10) || 0;
-            const ccxtSym = toCcxtSymbol(sym);
-            this.ratesCache.binance[ccxtSym] = { price, fundingRate, nextFundingTime };
-            this.ratesCache.binance[sym] = { price, fundingRate, nextFundingTime };
+            const key = this.unifiedKey(sym);
+            this.ratesCache.binance[key] = { price, fundingRate, nextFundingTime };
           }
           // After first successful message, ensure Bybit is subscribed to the same symbols (if not yet)
           if (this.bybitWs?.readyState === WebSocket.OPEN && this.bybitSubscribed.size === 0) {
@@ -161,9 +168,8 @@ export class WebSocketManager {
           const price = parseFloat(String(dataObj.markPrice ?? 0)) || 0;
           const fundingRate = parseFloat(String(dataObj.fundingRate ?? 0)) || 0;
           const nextFundingTime = parseInt(String(dataObj.nextFundingTime ?? 0), 10) || 0;
-          const ccxtSym = toCcxtSymbol(symbol);
-          this.ratesCache.bybit[ccxtSym] = { price, fundingRate, nextFundingTime };
-          this.ratesCache.bybit[symbol] = { price, fundingRate, nextFundingTime };
+          const key = this.unifiedKey(symbol);
+          this.ratesCache.bybit[key] = { price, fundingRate, nextFundingTime };
         } catch {
           // ignore
         }
@@ -213,10 +219,15 @@ export class WebSocketManager {
     }
   }
 
-  /** True if we have at least some data from both exchanges. */
+  /** True if we have at least some data from both exchanges (unified keys only). */
   hasData(): boolean {
     const binanceKeys = Object.keys(this.ratesCache.binance).filter((k) => k.includes('/'));
     const bybitKeys = Object.keys(this.ratesCache.bybit).filter((k) => k.includes('/'));
     return binanceKeys.length > 0 && bybitKeys.length > 0;
+  }
+
+  /** True when WS cache is populated and ready for getRates() (alias for hasData for clarity). */
+  isReady(): boolean {
+    return this.hasData();
   }
 }

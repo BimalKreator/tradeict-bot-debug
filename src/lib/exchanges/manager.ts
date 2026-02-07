@@ -145,10 +145,20 @@ export class ExchangeManager {
   }
 
   /**
-   * Returns funding rates from WebSocket cache (real-time). Falls back to one-time REST if WS not ready.
+   * Returns funding rates from WebSocket cache (real-time). Waits up to 2s for WS warm-up, then falls back to REST.
    * Use this for the screener so updates are instant and API limits are saved.
    */
   async getRates(): Promise<FundingRatesResult> {
+    const WAIT_MS = 2000;
+    const POLL_MS = 200;
+    if (!this.wsManager.isReady()) {
+      const deadline = Date.now() + WAIT_MS;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, POLL_MS));
+        if (this.wsManager.isReady()) break;
+      }
+    }
+
     const cache = this.wsManager.ratesCache;
     const binanceKeys = Object.keys(cache.binance).filter((s) => s.includes('/'));
     const bybitKeys = Object.keys(cache.bybit).filter((s) => s.includes('/'));
@@ -181,7 +191,7 @@ export class ExchangeManager {
       }
       return { binance, bybit };
     }
-    // Fallback: one-time REST until WS warms up
+    // Fallback: REST when WS still empty after wait (e.g. connection fail)
     const rest = await this.getFundingRates();
     const bybitSymbols = Object.keys(rest.bybit);
     if (bybitSymbols.length > 0) {

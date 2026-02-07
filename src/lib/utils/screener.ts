@@ -3,6 +3,8 @@ import { ExchangeManager } from '@/lib/exchanges/manager';
 
 let opportunityCache: FundingSpreadOpportunity[] = [];
 let lastCacheUpdate = 0;
+/** Limit debug logs per cycle to avoid spam. */
+let _screenerDebugLogCount = 0;
 
 const BLACKLIST = ['GPS', 'SKR', 'ENSO', 'ORBS', 'CVX', 'USDC', 'WAVES', 'DGB', 'BTS', 'PERP', 'TORN', 'OMG'];
 
@@ -64,7 +66,13 @@ function evaluateOpportunity(
   const byHours = getCachedInterval(symbol, 'bybit');
 
   // STRICT: reject if either interval unknown or if intervals mismatch (e.g. 4h vs 8h).
-  if (!binHours || !byHours || binHours !== byHours) return null;
+  if (!binHours || !byHours || binHours !== byHours) {
+    if (_screenerDebugLogCount < 5) {
+      console.log(`[Screener Debug] Missing data for ${symbol}: Rate=${!!(binRate && byRate)}, Interval bin=${binHours} by=${byHours}`);
+      _screenerDebugLogCount++;
+    }
+    return null;
+  }
 
   const binTime = binRate.fundingTimestamp || 0;
   const byTime = byRate.fundingTimestamp || 0;
@@ -123,6 +131,7 @@ export function calculateFundingSpreads(
   minSpreadDecimal: number,
   getCachedInterval: GetCachedInterval
 ): FundingSpreadOpportunity[] {
+  _screenerDebugLogCount = 0;
   const opportunities: FundingSpreadOpportunity[] = [];
   for (const symbol of commonTokens) {
     const binRate = binanceRates[symbol];
