@@ -45,7 +45,8 @@ export default function FundingTable() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 30000);
+    // Poll every 10s so background cache refresh is picked up without page reload
+    const interval = setInterval(fetchData, 10_000);
     return () => clearInterval(interval);
   }, []);
 

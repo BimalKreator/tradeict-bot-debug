@@ -11,7 +11,8 @@ function normalizeSymbol(symbol: string): string {
   return s.replace(/USDT:?USDT?$/i, '');
 }
 
-const POSITIONS_UI_TIMEOUT_MS = 10_000;
+/** Prefer data availability over speed: allow up to 40s for exchange responses (e.g. Binance >20s). */
+const POSITIONS_UI_TIMEOUT_MS = 40_000;
 
 export async function GET() {
   console.log('API /positions called');
@@ -34,7 +35,7 @@ export async function GET() {
       ]);
     } catch (timeoutOrErr) {
       if (String(timeoutOrErr).includes('timeout')) {
-        console.warn('[API /positions] Fetch timed out, returning empty positions');
+        console.warn('[API /positions] Fetch timed out after 40s, returning empty positions');
         result = { positions: [], dataComplete: false };
       } else {
         throw timeoutOrErr;
