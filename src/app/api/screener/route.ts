@@ -12,19 +12,12 @@ export async function GET() {
 
     let opportunities = getBestOpportunities();
     const cacheAge = getCacheAge();
+    const cacheValid = opportunities.length > 0 && cacheAge <= 60;
 
-    // Cold cache: await refresh so first load always gets data (user waits 2–3s but sees data)
-    if (opportunities.length === 0) {
-      console.log('[API Screener] Cache empty, awaiting refresh...');
+    if (!cacheValid) {
+      console.log('[API Screener] Cache empty or stale, awaiting refresh...');
       await refreshScreenerCache(minSpreadDecimal);
       opportunities = getBestOpportunities();
-    }
-    // Stale but non-empty: return stale immediately and refresh in background
-    else if (cacheAge > 60) {
-      refreshScreenerCache(minSpreadDecimal)
-        .then(() => console.log('[API Screener] Background refresh completed'))
-        .catch((e) => console.warn('[API Screener] Background refresh failed:', e));
-      // opportunities already set from getBestOpportunities() above
     }
 
     // Return all opportunities, capped at 50 for UI (no .slice(0, 5) limit)

@@ -421,19 +421,28 @@ export class ExchangeManager {
     const toFetch = force ? symbols : symbols.filter((s) => !this.getCachedInterval(s, 'binance'));
     if (toFetch.length === 0) return;
 
+    const binanceRates = ExchangeManager.intervalCache.binance;
+
     for (let i = 0; i < toFetch.length; i += CONCURRENCY) {
       const batch = toFetch.slice(i, i + CONCURRENCY);
       const results = await Promise.all(
         batch.map(async (symbol) => {
+          let hours = 0;
           const history = await this.binance.fetchFundingRateHistory(symbol, 2).catch(() => []);
-          if (!Array.isArray(history) || history.length < 2) return { symbol, hours: 0 };
-          const ts0 = history[0]?.fundingTime ?? 0;
-          const ts1 = history[1]?.fundingTime ?? 0;
-          if (ts0 <= 0 || ts1 <= 0) return { symbol, hours: 0 };
-          const intervalMs = Math.abs(ts1 - ts0);
-          const hours = intervalMs / (3600 * 1000);
-          const rounded = ExchangeManager.roundIntervalHours(hours);
-          return { symbol, hours: rounded };
+          if (Array.isArray(history) && history.length >= 2) {
+            const ts0 = history[0]?.fundingTime ?? 0;
+            const ts1 = history[1]?.fundingTime ?? 0;
+            if (ts0 > 0 && ts1 > 0) {
+              const intervalMs = Math.abs(ts1 - ts0);
+              hours = ExchangeManager.roundIntervalHours(intervalMs / (3600 * 1000));
+            }
+          }
+          if (hours === 0) {
+            const rate = binanceRates[symbol] ?? binanceRates[symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`];
+            const apiHours = ExchangeManager.getHoursFromRate(rate, 'binance');
+            hours = apiHours > 0 ? ExchangeManager.roundIntervalHours(apiHours) : 8;
+          }
+          return { symbol, hours };
         })
       );
       for (const { symbol, hours } of results) {
