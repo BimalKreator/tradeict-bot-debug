@@ -22,6 +22,11 @@ export class LocalScheduler {
   start(): void {
     this.stop();
     startBackupJob();
+    // Full interval data on startup: load from disk (getInstance loads cache), then run throttled full scan if cache small
+    const manager = new ExchangeManager();
+    IntervalManager.getInstance()
+      .runInitialFullScan(manager)
+      .catch((err) => console.warn('[Scheduler] IntervalManager runInitialFullScan failed:', err));
     const minRow = db.db.prepare('SELECT min_spread_percent FROM bot_settings WHERE id = 1').get() as { min_spread_percent: number } | undefined;
     const minSpreadDecimal = (minRow?.min_spread_percent ?? 0) / 100;
     refreshScreenerCache(minSpreadDecimal).catch((err) =>
