@@ -185,7 +185,7 @@ export class BinanceExchange {
 
   /**
    * Fetches balance and used margin (totalInitialMargin) from the Futures account.
-   * Uses fapi/v2/account for Binance USDT-M to get actual totalInitialMargin.
+   * Source of truth: Binance API totalInitialMargin from fapi/v2/account or balance.info.
    */
   async getBalanceWithMargin(): Promise<{ balance: number; usedMargin: number }> {
     const balance = await this.exchange.fetchBalance();
@@ -193,13 +193,19 @@ export class BinanceExchange {
     const bal = typeof usdt === 'number' ? usdt : 0;
 
     let usedMargin = 0;
-    try {
-      const account = await (this.exchange as any).fapiPrivateV2GetAccount?.();
-      if (account?.totalInitialMargin != null) {
-        usedMargin = parseFloat(String(account.totalInitialMargin)) || 0;
+    const info = (balance as any).info;
+    if (info?.totalInitialMargin != null) {
+      usedMargin = parseFloat(String(info.totalInitialMargin)) || 0;
+    }
+    if (usedMargin === 0) {
+      try {
+        const account = await (this.exchange as any).fapiPrivateV2GetAccount?.();
+        if (account?.totalInitialMargin != null) {
+          usedMargin = parseFloat(String(account.totalInitialMargin)) || 0;
+        }
+      } catch {
+        // fallback to balance.used
       }
-    } catch {
-      // fallback to balance.used
     }
     if (usedMargin === 0 && typeof (balance as any).used === 'object') {
       const used = (balance as any).used?.['USDT'];

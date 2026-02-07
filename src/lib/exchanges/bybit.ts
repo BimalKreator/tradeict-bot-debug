@@ -189,7 +189,7 @@ export class BybitExchange {
 
   /**
    * Fetches balance and used margin (totalInitialMargin) from the account.
-   * Uses v5/account/wallet-balance for Bybit to get actual totalInitialMargin.
+   * Source of truth: Bybit API totalInitialMargin. Tries UNIFIED then CONTRACT.
    */
   async getBalanceWithMargin(): Promise<{ balance: number; usedMargin: number }> {
     const balance = await this.exchange.fetchBalance();
@@ -197,19 +197,34 @@ export class BybitExchange {
     const bal = typeof usdt === 'number' ? usdt : 0;
 
     let usedMargin = 0;
-    try {
-      const res = await (this.exchange as any).privateGetV5AccountWalletBalance?.({
-        accountType: 'UNIFIED',
-      });
-      const list = res?.result?.list;
-      if (Array.isArray(list) && list.length > 0) {
-        const margin = list[0]?.totalInitialMargin;
-        if (margin != null) {
-          usedMargin = parseFloat(String(margin)) || 0;
-        }
+    const info = (balance as any).info;
+    if (info?.totalInitialMargin != null) {
+      usedMargin = parseFloat(String(info.totalInitialMargin)) || 0;
+    }
+    if (usedMargin === 0 && Array.isArray(info?.list) && info.list.length > 0) {
+      const first = info.list[0];
+      if (first?.totalInitialMargin != null) {
+        usedMargin = parseFloat(String(first.totalInitialMargin)) || 0;
       }
-    } catch {
-      // fallback to balance.used
+    }
+    if (usedMargin === 0) {
+      try {
+        for (const accountType of ['UNIFIED', 'CONTRACT']) {
+          const res = await (this.exchange as any).privateGetV5AccountWalletBalance?.({
+            accountType,
+          });
+          const list = res?.result?.list;
+          if (Array.isArray(list) && list.length > 0) {
+            const margin = list[0]?.totalInitialMargin;
+            if (margin != null) {
+              usedMargin = parseFloat(String(margin)) || 0;
+              break;
+            }
+          }
+        }
+      } catch {
+        // continue to fallback
+      }
     }
     if (usedMargin === 0 && typeof (balance as any).used === 'object') {
       const used = (balance as any).used?.['USDT'];

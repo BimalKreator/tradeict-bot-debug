@@ -163,22 +163,30 @@ export async function GET() {
       }
     }
 
-    // 2. Used margin from active_trades (DB), then available = balance - margin
+    // 2. Used margin: prefer REAL API value (source of truth). Fallback to DB only if API margin undefined.
     const { binance: binanceMarginFromDb, bybit: bybitMarginFromDb } = getUsedMarginFromActiveTrades();
-    const binanceAvailable = Math.max(0, liveBalances.binance - binanceMarginFromDb);
-    const bybitAvailable = Math.max(0, liveBalances.bybit - bybitMarginFromDb);
-    const totalMargin = binanceMarginFromDb + bybitMarginFromDb;
+    const binanceMargin =
+      liveBalances.binanceUsedMargin != null && liveBalances.binanceUsedMargin > 0
+        ? liveBalances.binanceUsedMargin
+        : binanceMarginFromDb;
+    const bybitMargin =
+      liveBalances.bybitUsedMargin != null && liveBalances.bybitUsedMargin > 0
+        ? liveBalances.bybitUsedMargin
+        : bybitMarginFromDb;
+    const totalMargin = binanceMargin + bybitMargin;
+    const binanceAvailable = Math.max(0, liveBalances.binance - binanceMargin);
+    const bybitAvailable = Math.max(0, liveBalances.bybit - bybitMargin);
     const totalAvailable = binanceAvailable + bybitAvailable;
 
     const exchangePayload = {
       binance: {
         balance: liveBalances.binance,
-        margin: binanceMarginFromDb,
+        margin: binanceMargin,
         available: binanceAvailable,
       },
       bybit: {
         balance: liveBalances.bybit,
-        margin: bybitMarginFromDb,
+        margin: bybitMargin,
         available: bybitAvailable,
       },
       total: {
@@ -258,15 +266,15 @@ export async function GET() {
         daily_avg_roi: dailyAvgRoi,
         weekly_avg_roi: weeklyAvgRoi,
         thirty_day_avg_roi: thirtyDayAvgRoi,
-        // Exchange health: margin from active_trades DB, available = balance - margin
+        // Exchange health: margin from API (source of truth), fallback to DB; available = balance - margin
         binance: exchangePayload.binance,
         bybit: exchangePayload.bybit,
         total: exchangePayload.total,
         // Flat fields for backward compatibility
         binance_balance: liveBalances.binance,
         bybit_balance: liveBalances.bybit,
-        binance_margin: binanceMarginFromDb,
-        bybit_margin: bybitMarginFromDb,
+        binance_margin: binanceMargin,
+        bybit_margin: bybitMargin,
         total_margin: totalMargin,
         binance_available: binanceAvailable,
         bybit_available: bybitAvailable,
