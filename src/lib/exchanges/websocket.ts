@@ -114,7 +114,7 @@ export class WebSocketManager {
             // Fix: Cast 'arr' to 'any[]' first to avoid type conflict with 'unknown'
             const rawData = arr as any[];
             const symbols = Array.from(new Set(rawData.map((x: any) => x.s).filter((s: any) => typeof s === 'string'))) as string[];
-            this.subscribeBybitTickers(symbols.slice(0, 300));
+            this.subscribeBybitTickers(symbols);
           }
         } catch (e) {
           // ignore parse errors

@@ -515,8 +515,8 @@ export class ExchangeManager {
    * Processes in small batches with delay between batches to avoid heap pressure and timeouts.
    */
   async resolveBinanceIntervals(symbols: string[], force: boolean = false): Promise<void> {
-    const BATCH_SIZE = 15;
-    const DELAY_BETWEEN_BATCHES_MS = 500;
+    const BATCH_SIZE = 50;
+    const DELAY_BETWEEN_BATCHES_MS = 200;
     const toFetch = force ? symbols : symbols.filter((s) => !this.getCachedInterval(s, 'binance'));
     if (toFetch.length === 0) return;
 

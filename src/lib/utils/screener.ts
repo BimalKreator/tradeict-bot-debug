@@ -68,7 +68,7 @@ function evaluateOpportunity(
   // STRICT: reject if either interval unknown or if intervals mismatch (e.g. 4h vs 8h).
   if (!binHours || !byHours || binHours !== byHours) {
     if (_screenerDebugLogCount < 5) {
-      console.log(`[Screener Debug] Missing data for ${symbol}: Rate=${!!(binRate && byRate)}, Interval bin=${binHours} by=${byHours}`);
+      console.log(`[Screener] Rejecting ${symbol}: Interval Mismatch (Bin=${binHours}, By=${byHours})`);
       _screenerDebugLogCount++;
     }
     return null;
@@ -76,15 +76,39 @@ function evaluateOpportunity(
 
   const binTime = binRate.fundingTimestamp || 0;
   const byTime = byRate.fundingTimestamp || 0;
-  if (binTime === 0 || byTime === 0) return null;
-  if (Math.abs(binTime - byTime) > 15 * 60 * 1000) return null;
+  if (binTime === 0 || byTime === 0) {
+    if (_screenerDebugLogCount < 5) {
+      console.log(`[Screener] Rejecting ${symbol}: Missing Funding Timestamp (binTime=${binTime}, byTime=${byTime})`);
+      _screenerDebugLogCount++;
+    }
+    return null;
+  }
+  if (Math.abs(binTime - byTime) > 15 * 60 * 1000) {
+    if (_screenerDebugLogCount < 5) {
+      console.log(`[Screener] Rejecting ${symbol}: Funding Time Too Far Apart (diff=${Math.abs(binTime - byTime)}ms)`);
+      _screenerDebugLogCount++;
+    }
+    return null;
+  }
 
   const binFunding = binRate.fundingRate ?? 0;
   const byFunding = byRate.fundingRate ?? 0;
-  if (binFunding === 0 || byFunding === 0) return null;
+  if (binFunding === 0 || byFunding === 0) {
+    if (_screenerDebugLogCount < 5) {
+      console.log(`[Screener] Rejecting ${symbol}: Zero Funding Rate (bin=${binFunding}, by=${byFunding})`);
+      _screenerDebugLogCount++;
+    }
+    return null;
+  }
 
   const spread = Math.abs(binFunding - byFunding);
-  if (spread <= 0) return null;
+  if (spread <= 0) {
+    if (_screenerDebugLogCount < 5) {
+      console.log(`[Screener] Rejecting ${symbol}: No Spread (spread=${spread})`);
+      _screenerDebugLogCount++;
+    }
+    return null;
+  }
 
   const netSpread = spread - minSpreadDecimal;
   const nextFundingTime = byTime > 0 ? byTime : binTime;
@@ -132,15 +156,26 @@ export function calculateFundingSpreads(
   getCachedInterval: GetCachedInterval
 ): FundingSpreadOpportunity[] {
   _screenerDebugLogCount = 0;
+  console.log('[Screener] Input Symbols Count:', commonTokens.length);
+  if (Object.keys(binanceRates).length === 0 || Object.keys(bybitRates).length === 0) {
+    console.warn('[Screener] Rates Cache is EMPTY!');
+  }
   const opportunities: FundingSpreadOpportunity[] = [];
   for (const symbol of commonTokens) {
     const binRate = binanceRates[symbol];
     const byRate = bybitRates[symbol];
-    if (!binRate || !byRate) continue;
+    if (!binRate || !byRate) {
+      if (_screenerDebugLogCount < 5) {
+        console.log(`[Screener] Rejecting ${symbol}: Missing Rate (no binance or bybit data)`);
+        _screenerDebugLogCount++;
+      }
+      continue;
+    }
 
     const opp = evaluateOpportunity(symbol, binRate, byRate, minSpreadDecimal, getCachedInterval);
     if (opp) opportunities.push(opp);
   }
+  console.log('[Screener] Final Opportunities Found:', opportunities.length);
   return opportunities.sort((a, b) => {
     const intA = a.intervalHours ?? 0;
     const intB = b.intervalHours ?? 0;
@@ -158,6 +193,9 @@ export async function refreshScreenerCache(minSpreadDecimal: number = 0): Promis
     await manager.refreshIntervalsIfNeeded();
     // Real-time rates from WebSocket; fallback to REST if WS not ready
     const { binance, bybit } = await manager.getRates();
+    if (Object.keys(binance).length === 0 || Object.keys(bybit).length === 0) {
+      console.warn('[Screener] Rates Cache is EMPTY!');
+    }
     const common = getCommonTokens(binance, bybit);
     await manager.resolveBinanceIntervals(common);
     manager.populateBybitIntervalsFromRates(bybit);
