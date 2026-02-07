@@ -181,12 +181,13 @@ export function calculateFundingSpreads(
   }
   console.log('[Screener] Final Opportunities Found:', opportunities.length);
   return opportunities.sort((a, b) => {
-    const intA = a.intervalHours ?? 0;
-    const intB = b.intervalHours ?? 0;
-    const isGroup1A = intA >= 1 && intA <= 2;
-    const isGroup1B = intB >= 1 && intB <= 2;
-    if (isGroup1A && !isGroup1B) return -1;
-    if (!isGroup1A && isGroup1B) return 1;
+    // Tier 1: 1h or 2h (priority). Tier 2: 4h, 8h or others.
+    const isTier1_A = a.intervalHours === 1 || a.intervalHours === 2;
+    const isTier1_B = b.intervalHours === 1 || b.intervalHours === 2;
+    // Primary: Tier 1 before Tier 2
+    if (isTier1_A && !isTier1_B) return -1;
+    if (!isTier1_A && isTier1_B) return 1;
+    // Tie-breaker: Net Spread high to low
     return (b.netSpread ?? 0) - (a.netSpread ?? 0);
   });
 }
