@@ -36,6 +36,18 @@ export class BinanceExchange {
   }
 
   /**
+   * Returns CCXT market for symbol (must have called loadMarketsAndGet first).
+   * Used for metadata-first interval resolution (no API call).
+   */
+  getMarket(symbol: string): { info?: Record<string, unknown> } | undefined {
+    try {
+      return this.exchange.market(symbol) as { info?: Record<string, unknown> } | undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Fetches funding rates for USDT perpetuals.
    */
   async fetchFundingRates(): Promise<Record<string, ccxt.FundingRate>> {

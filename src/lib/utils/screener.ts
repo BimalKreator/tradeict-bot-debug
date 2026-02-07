@@ -62,11 +62,14 @@ function evaluateOpportunity(
   minSpreadDecimal: number,
   getCachedInterval: GetCachedInterval
 ): FundingSpreadOpportunity | null {
-  const binHours = getCachedInterval(symbol, 'binance');
+  let binHours = getCachedInterval(symbol, 'binance');
   const byHours = getCachedInterval(symbol, 'bybit');
 
-  // STRICT: reject if either interval unknown or if intervals mismatch (e.g. 4h vs 8h).
-  if (!binHours || !byHours || binHours !== byHours) {
+  // If Binance interval missing, assume 8h (trust the opportunity score).
+  if (!binHours) binHours = 8;
+
+  // Reject if Bybit interval unknown or if intervals mismatch (e.g. 4h vs 8h).
+  if (!byHours || binHours !== byHours) {
     if (_screenerDebugLogCount < 5) {
       console.log(`[Screener] Rejecting ${symbol}: Interval Mismatch (Bin=${binHours}, By=${byHours})`);
       _screenerDebugLogCount++;

@@ -511,51 +511,37 @@ export class ExchangeManager {
   }
 
   /**
-   * Resolves Binance funding interval from HISTORY for the given symbols only.
-   * Processes in small batches with delay between batches to avoid heap pressure and timeouts.
+   * Resolves Binance funding interval using METADATA only (no fetchFundingRateHistory).
+   * Reads from CCXT market.info.fundingIntervalHours to avoid API rate limits on 300+ symbols.
+   * Defaults to 8h when metadata is missing (safe assumption).
    */
   async resolveBinanceIntervals(symbols: string[], force: boolean = false): Promise<void> {
-    const BATCH_SIZE = 50;
-    const DELAY_BETWEEN_BATCHES_MS = 200;
     const toFetch = force ? symbols : symbols.filter((s) => !this.getCachedInterval(s, 'binance'));
     if (toFetch.length === 0) return;
 
-    const binanceRates = ExchangeManager.intervalCache.binance;
+    await this.binance.loadMarketsAndGet();
 
-    for (let i = 0; i < toFetch.length; i += BATCH_SIZE) {
-      const batch = toFetch.slice(i, i + BATCH_SIZE);
-      const results = await Promise.all(
-        batch.map(async (symbol) => {
-          let hours = 0;
-          const history = await this.binance.fetchFundingRateHistory(symbol, 2).catch(() => []);
-          if (Array.isArray(history) && history.length >= 2) {
-            const ts0 = history[0]?.fundingTime ?? 0;
-            const ts1 = history[1]?.fundingTime ?? 0;
-            if (ts0 > 0 && ts1 > 0) {
-              const intervalMs = Math.abs(ts1 - ts0);
-              const rawHours = intervalMs / (3600 * 1000);
-              hours = ExchangeManager.roundIntervalHours(Math.round(rawHours));
-            }
-          }
-          if (hours === 0) {
-            const rate = binanceRates[symbol] ?? binanceRates[symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`];
-            const apiHours = ExchangeManager.getHoursFromRate(rate, 'binance');
-            hours = apiHours > 0 ? ExchangeManager.roundIntervalHours(apiHours) : 8;
-          }
-          return { symbol, hours };
-        })
-      );
-      for (const { symbol, hours } of results) {
-        ExchangeManager.binanceIntervalCache[symbol] = hours;
-        const full = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
-        const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : symbol.replace(/USDT:?USDT?/i, '') + 'USDT';
-        if (full !== symbol) ExchangeManager.binanceIntervalCache[full] = hours;
-        if (base !== symbol && base !== full) ExchangeManager.binanceIntervalCache[base] = hours;
+    console.log(`[ExchangeManager] Resolving intervals for ${toFetch.length} symbols using METADATA...`);
+
+    for (const symbol of toFetch) {
+      const full = symbol.includes('/') ? symbol : `${symbol}/USDT:USDT`;
+      const market = this.binance.getMarket(full) ?? this.binance.getMarket(symbol);
+      let hours = 0;
+      if (market?.info && typeof (market.info as Record<string, unknown>).fundingIntervalHours !== 'undefined') {
+        const raw = (market.info as Record<string, unknown>).fundingIntervalHours;
+        hours = ExchangeManager.roundIntervalHours(parseFloat(String(raw)) || 0);
       }
-      if (i + BATCH_SIZE < toFetch.length) {
-        await ExchangeManager.delay(DELAY_BETWEEN_BATCHES_MS);
+      if (hours <= 0) {
+        hours = 8;
       }
+      ExchangeManager.binanceIntervalCache[symbol] = hours;
+      ExchangeManager.binanceIntervalCache[full] = hours;
+      const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : symbol.replace(/USDT:?USDT?/i, '') + 'USDT';
+      if (base !== symbol && base !== full) ExchangeManager.binanceIntervalCache[base] = hours;
     }
+
+    const sample = Object.entries(ExchangeManager.binanceIntervalCache).slice(0, 3);
+    console.log('[ExchangeManager] Intervals resolved. Sample:', sample);
   }
 
   /**
