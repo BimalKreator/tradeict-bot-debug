@@ -21,6 +21,44 @@ type SnapshotRow = {
 
 type LedgerRow = { date: string; total_balance: number };
 
+type ActiveTradeRow = {
+  quantity: number;
+  leverage: number | null;
+  entry_price_binance: number | null;
+  entry_price_bybit: number | null;
+};
+
+/** Compute used margin per exchange from active_trades: SUM((qty * entry_price) / leverage). */
+function getUsedMarginFromActiveTrades(): { binance: number; bybit: number } {
+  const rows = db.db
+    .prepare(
+      `SELECT quantity, leverage, entry_price_binance, entry_price_bybit
+       FROM active_trades WHERE status = 'ACTIVE'`
+    )
+    .all() as ActiveTradeRow[];
+
+  let binanceMargin = 0;
+  let bybitMargin = 0;
+  const levDefault = 1;
+
+  for (const t of rows) {
+    const qty = Number(t.quantity) || 0;
+    const lev = Number(t.leverage) || levDefault;
+    if (qty <= 0 || lev <= 0) continue;
+
+    const binanceEntry = Number(t.entry_price_binance) || 0;
+    const bybitEntry = Number(t.entry_price_bybit) || 0;
+
+    const tradeMarginBinance = (qty * binanceEntry) / lev;
+    const tradeMarginBybit = (qty * bybitEntry) / lev;
+
+    binanceMargin += tradeMarginBinance;
+    bybitMargin += tradeMarginBybit;
+  }
+
+  return { binance: binanceMargin, bybit: bybitMargin };
+}
+
 function getOpeningBalanceFromLedger(today: string): number {
   if (today === HISTORIC_OPENING_DATE) return HISTORIC_OPENING_BALANCE;
 
@@ -116,7 +154,32 @@ export async function GET() {
       }
     }
 
-    // 2. Fetch manual deposits/withdrawals from DB
+    // 2. Used margin from active_trades (DB), then available = balance - margin
+    const { binance: binanceMarginFromDb, bybit: bybitMarginFromDb } = getUsedMarginFromActiveTrades();
+    const binanceAvailable = Math.max(0, liveBalances.binance - binanceMarginFromDb);
+    const bybitAvailable = Math.max(0, liveBalances.bybit - bybitMarginFromDb);
+    const totalMargin = binanceMarginFromDb + bybitMarginFromDb;
+    const totalAvailable = binanceAvailable + bybitAvailable;
+
+    const exchangePayload = {
+      binance: {
+        balance: liveBalances.binance,
+        margin: binanceMarginFromDb,
+        available: binanceAvailable,
+      },
+      bybit: {
+        balance: liveBalances.bybit,
+        margin: bybitMarginFromDb,
+        available: bybitAvailable,
+      },
+      total: {
+        balance: liveBalances.total,
+        margin: totalMargin,
+        available: totalAvailable,
+      },
+    };
+
+    // 3. Fetch manual deposits/withdrawals from DB
     const snapshot = db.db
       .prepare(
         'SELECT date, opening_balance, closing_balance, total_deposits, total_withdrawals, growth_percentage FROM daily_balance_snapshots WHERE date = ?'
@@ -178,8 +241,6 @@ export async function GET() {
     return NextResponse.json(
       {
         current_total_balance: liveBalances.total,
-        binance_balance: liveBalances.binance,
-        bybit_balance: liveBalances.bybit,
         opening_balance: openingBalance,
         todays_deposits: todaysDeposits,
         todays_withdrawals: todaysWithdrawals,
@@ -188,11 +249,18 @@ export async function GET() {
         daily_avg_roi: dailyAvgRoi,
         weekly_avg_roi: weeklyAvgRoi,
         thirty_day_avg_roi: thirtyDayAvgRoi,
-        binance_margin: liveBalances.binanceUsedMargin,
-        bybit_margin: liveBalances.bybitUsedMargin,
-        total_margin: liveBalances.binanceUsedMargin + liveBalances.bybitUsedMargin,
-        binance_available: liveBalances.binanceAvailable,
-        bybit_available: liveBalances.bybitAvailable,
+        // Exchange health: margin from active_trades DB, available = balance - margin
+        binance: exchangePayload.binance,
+        bybit: exchangePayload.bybit,
+        total: exchangePayload.total,
+        // Flat fields for backward compatibility
+        binance_balance: liveBalances.binance,
+        bybit_balance: liveBalances.bybit,
+        binance_margin: binanceMarginFromDb,
+        bybit_margin: bybitMarginFromDb,
+        total_margin: totalMargin,
+        binance_available: binanceAvailable,
+        bybit_available: bybitAvailable,
       },
       { headers: { 'Cache-Control': 'no-store, max-age=0' } }
     );

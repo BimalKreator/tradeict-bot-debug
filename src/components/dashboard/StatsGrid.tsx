@@ -3,6 +3,12 @@
 import { useEffect, useState } from 'react';
 import { Wallet, TrendingUp, Activity } from 'lucide-react';
 
+interface ExchangeHealth {
+  balance: number;
+  margin: number;
+  available: number;
+}
+
 interface StatsData {
   current_total_balance: number;
   binance_balance: number;
@@ -20,6 +26,10 @@ interface StatsData {
   total_margin: number;
   binance_available?: number;
   bybit_available?: number;
+  /** New shape: margin from active_trades DB, available = balance - margin */
+  binance?: ExchangeHealth;
+  bybit?: ExchangeHealth;
+  total?: ExchangeHealth;
 }
 
 const fmt = (n: number) =>
