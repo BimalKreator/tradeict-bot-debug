@@ -201,6 +201,11 @@ export function calculateFundingSpreads(
 export async function refreshScreenerCache(minSpreadDecimal: number = 0): Promise<void> {
   try {
     const manager = new ExchangeManager();
+    const intervalManager = IntervalManager.getInstance();
+    if (intervalManager.getCacheSize() === 0) {
+      console.log('[Screener] First run detected, triggering Binance interval scan...');
+      await intervalManager.runInitialFullScan(manager);
+    }
     await manager.refreshIntervalsIfNeeded();
     // Real-time rates from WebSocket; fallback to REST if WS not ready
     const { binance, bybit } = await manager.getRates();
@@ -210,7 +215,6 @@ export async function refreshScreenerCache(minSpreadDecimal: number = 0): Promis
     const common = getCommonTokens(binance, bybit);
     manager.populateBybitIntervalsFromRates(bybit);
     // Binance interval from IntervalManager (chunked history scan); Bybit from rate metadata
-    const intervalManager = IntervalManager.getInstance();
     const getCachedInterval = (symbol: string, exchange: 'binance' | 'bybit') =>
       exchange === 'binance' ? intervalManager.getInterval(symbol) : manager.getCachedInterval(symbol, 'bybit');
     opportunityCache = calculateFundingSpreads(common, binance, bybit, minSpreadDecimal, getCachedInterval);

@@ -3,9 +3,9 @@ import path from 'path';
 import { ExchangeManager } from '@/lib/exchanges/manager';
 
 const DELAY_BETWEEN_FETCHES_MS = 100;
-const INITIAL_SCAN_DELAY_MS = 300;
+const INITIAL_SCAN_DELAY_MS = 500;
 const STANDARD_INTERVALS = [1, 2, 4, 8] as const;
-const MIN_CACHE_ENTRIES_TO_SKIP_SCAN = 50;
+const MIN_CACHE_ENTRIES_TO_SKIP_SCAN = 0;
 
 const CACHE_PATH = path.join(process.cwd(), 'data', 'interval-cache.json');
 
@@ -51,6 +51,16 @@ export class IntervalManager {
       IntervalManager.instance.loadCache();
     }
     return IntervalManager.instance;
+  }
+
+  /** Number of cached interval entries. Used to detect first run (0 = empty). */
+  getCacheSize(): number {
+    return Object.keys(this.intervalCache).length;
+  }
+
+  /** True if no intervals have been cached yet (e.g. first run). */
+  isCacheEmpty(): boolean {
+    return this.getCacheSize() === 0;
   }
 
   /** Load cache from disk (intervals + updatedAt). Supports legacy format (intervals only). */
@@ -118,7 +128,7 @@ export class IntervalManager {
 
   /**
    * Warm-up: full scan with 300ms delay between fetches to stay under Binance rate limit.
-   * Skipped if cache already has > 50 entries (e.g. loaded from disk).
+   * Skipped only if cache already has entries (e.g. loaded from disk); threshold is 0 so first run always scans.
    */
   async runInitialFullScan(manager: ExchangeManager): Promise<void> {
     const entries = Object.keys(this.intervalCache).length;
@@ -144,13 +154,13 @@ export class IntervalManager {
             const hours = roundIntervalHours(Math.round(rawHours));
             this.setCached(symbol, hours);
           } else {
-            this.setCached(symbol, 8);
+            console.log(`[IntervalManager] ${symbol}: Fetch failed/empty, skipping cache.`);
           }
         } else {
-          this.setCached(symbol, 8);
+          console.log(`[IntervalManager] ${symbol}: Fetch failed/empty, skipping cache.`);
         }
       } catch {
-        this.setCached(symbol, 8);
+        console.log(`[IntervalManager] ${symbol}: Fetch failed/empty, skipping cache.`);
       }
       await delay(INITIAL_SCAN_DELAY_MS);
     }
@@ -193,18 +203,18 @@ export class IntervalManager {
             const hours = roundIntervalHours(Math.round(rawHours));
             this.setCached(symbol, hours);
           } else {
-            this.setCached(symbol, 8);
+            console.log(`[IntervalManager] ${symbol}: Fetch failed/empty, skipping cache.`);
           }
         } else {
-          this.setCached(symbol, 8);
+          console.log(`[IntervalManager] ${symbol}: Fetch failed/empty, skipping cache.`);
         }
       } catch {
-        this.setCached(symbol, 8);
+        console.log(`[IntervalManager] ${symbol}: Fetch failed/empty, skipping cache.`);
       }
       await delay(DELAY_BETWEEN_FETCHES_MS);
     }
 
-    const sample = chunk.slice(0, 3).map((s) => [s, this.intervalCache[s] ?? 8]);
+    const sample = chunk.slice(0, 3).map((s) => [s, this.intervalCache[s] ?? 0]);
     console.log('[IntervalManager] Batch done. Sample:', sample);
     this.saveCache();
   }
