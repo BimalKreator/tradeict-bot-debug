@@ -226,12 +226,12 @@ export class IntervalManager {
   }
 
   /**
-   * Returns cached interval in hours (1, 2, 4, 8). Defaults to 8 if not yet scanned.
+   * Returns cached interval in hours (1, 2, 4, 8). Returns 0 if not yet scanned.
    */
   getInterval(symbol: string): number {
     const full = symbol.includes('/') ? symbol : (symbol.replace(/USDT$/i, '') || symbol) + '/USDT:USDT';
     const base = symbol.includes('/') ? symbol.split('/')[0] + 'USDT' : (symbol.replace(/USDT:?USDT?/i, '') || symbol) + 'USDT';
     const v = this.intervalCache[symbol] ?? this.intervalCache[full] ?? this.intervalCache[base];
-    return typeof v === 'number' && v > 0 ? v : 8;
+    return typeof v === 'number' && v > 0 ? v : 0;
   }
 }

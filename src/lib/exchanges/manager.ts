@@ -546,8 +546,29 @@ export class ExchangeManager {
       return 0;
     }
     if (exchange === 'bybit') {
-      if (info.fundingIntervalHour != null) return parseFloat(String(info.fundingIntervalHour));
-      if (info.fundingInterval != null) return parseInt(String(info.fundingInterval), 10) / 60;
+      // Method 1: fundingIntervalHour (direct hours)
+      if (info.fundingIntervalHour != null) {
+        const hours = parseFloat(String(info.fundingIntervalHour));
+        if (hours > 0) return hours;
+      }
+
+      // Method 2: fundingInterval (could be minutes or hours depending on API version)
+      if (info.fundingInterval != null) {
+        const val = parseInt(String(info.fundingInterval), 10);
+        if (val >= 60) {
+          // Likely in minutes (e.g., 480 = 8h, 60 = 1h, 240 = 4h)
+          return val / 60;
+        } else if (val > 0) {
+          // Already in hours (e.g., 8, 4, 2, 1)
+          return val;
+        }
+      }
+
+      // Method 3: fundingIntervalMinutes (fallback)
+      if (info.fundingIntervalMinutes != null) {
+        const mins = parseInt(String(info.fundingIntervalMinutes), 10);
+        if (mins > 0) return mins / 60;
+      }
     }
     return 0;
   }
