@@ -66,13 +66,19 @@ function evaluateOpportunity(
   let binHours = getCachedInterval(symbol, 'binance');
   const byHours = getCachedInterval(symbol, 'bybit');
 
-  // If Binance interval missing, assume 8h (trust the opportunity score).
-  if (!binHours) binHours = 8;
-
-  // Reject if Bybit interval unknown or if intervals mismatch (e.g. 4h vs 8h).
-  if (!byHours || binHours !== byHours) {
+  // ✅ FIX: Reject if either interval is unknown - DO NOT assume 8h
+  if (!binHours || !byHours) {
     if (_screenerDebugLogCount < 5) {
-      console.log(`[Screener] Rejecting ${symbol}: Interval Mismatch (Bin=${binHours}, By=${byHours})`);
+      console.log(`[Screener] Rejecting ${symbol}: Missing Interval (Bin=${binHours || 0}, By=${byHours || 0})`);
+      _screenerDebugLogCount++;
+    }
+    return null;
+  }
+
+  // ✅ FIX: Reject if intervals don't match exactly
+  if (binHours !== byHours) {
+    if (_screenerDebugLogCount < 5) {
+      console.log(`[Screener] Rejecting ${symbol}: Interval Mismatch (Bin=${binHours}h, By=${byHours}h)`);
       _screenerDebugLogCount++;
     }
     return null;
